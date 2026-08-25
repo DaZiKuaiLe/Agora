@@ -1,6 +1,6 @@
 package com.newoether.agora.data.repository
 
-import com.newoether.agora.data.ConversationSettings
+import com.newoether.agora.data.ConversationToolState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
@@ -22,18 +22,18 @@ class ConversationSettingsStateTest {
     fun `stale persisted emission cannot overwrite pending optimistic settings`() {
         val state = ConversationSettingsState()
         state.acceptPersisted(
-            mapOf("conversation" to ConversationSettings(webSearchEnabled = true)),
+            mapOf("conversation" to ConversationToolState(webSearchEnabled = true)),
         )
 
         val write = state.update("conversation") {
             it.copy(webSearchEnabled = false, openAiWebSearchEnabled = false)
         }
         state.acceptPersisted(
-            mapOf("conversation" to ConversationSettings(webSearchEnabled = true)),
+            mapOf("conversation" to ConversationToolState(webSearchEnabled = true)),
         )
 
         assertEquals(
-            ConversationSettings(
+            ConversationToolState(
                 webSearchEnabled = false,
                 openAiWebSearchEnabled = false,
             ),
@@ -43,7 +43,7 @@ class ConversationSettingsStateTest {
         state.complete(
             write,
             mapOf(
-                "conversation" to ConversationSettings(
+                "conversation" to ConversationToolState(
                     webSearchEnabled = false,
                     openAiWebSearchEnabled = false,
                 ),
@@ -60,18 +60,18 @@ class ConversationSettingsStateTest {
 
         state.complete(
             webWrite,
-            mapOf("conversation" to ConversationSettings(webSearchEnabled = false)),
+            mapOf("conversation" to ConversationToolState(webSearchEnabled = false)),
         )
 
         assertEquals(
-            ConversationSettings(webSearchEnabled = false, shellEnabled = false),
+            ConversationToolState(webSearchEnabled = false, shellEnabled = false),
             state.state.value.getValue("conversation"),
         )
 
         state.complete(
             shellWrite,
             mapOf(
-                "conversation" to ConversationSettings(
+                "conversation" to ConversationToolState(
                     webSearchEnabled = false,
                     shellEnabled = false,
                 ),

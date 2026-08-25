@@ -231,6 +231,10 @@
     <string name="image_gen_size">Standardgröße</string>
     <string name="image_gen_size_hint">1024x1024</string>
     <string name="image_gen_show_all">Alle Modelle anzeigen</string>
+    <string name="settings_image_upload">Bild-Upload</string>
+    <string name="settings_image_upload_desc">Steuert die Skalierung hochgeladener Bilder vor dem Senden</string>
+    <string name="image_upload_max_dimension">Auflösungslimit</string>
+    <string name="image_upload_max_dimension_desc">Längste Kante eines hochgeladenen Bildes. Niedriger = weniger Tokens, weniger Details.</string>
     <string name="tool_generate_image">Bild erzeugen</string>
     <string name="tool_generating_image">Bild wird erzeugt…</string>
     <string name="tool_generated_image">Bild erzeugt</string>
@@ -319,6 +323,8 @@
     <string name="context_window">Kontextfenster</string>
     <string name="context_window_desc">Maximaler Kontext für eine Generierung</string>
     <string name="context_window_default">Standard-Kontextfenster</string>
+    <string name="context_limit">Kontextlimit</string>
+    <string name="compact_threshold">Komprimierungsschwelle</string>
     <string name="context_token_budget_value">Etwa %1$s Tokens</string>
     <string name="context_retain">%1$d aktuelle Nachrichten behalten</string>
     <string name="context_visualize">Kontext-Roll-out visualisieren</string>
@@ -393,6 +399,8 @@
     <string name="web_search_tavily">Tavily</string>
     <string name="web_search_searxng">SearXNG</string>
     <string name="web_search_duckduckgo">DuckDuckGo</string>
+    <string name="web_search_baidu">Baidu-Suche</string>
+    <string name="web_search_baidu_desc">Baidu Qianfan AI-Suche. Zuverlässige chinesische Abdeckung und aktuelle Ergebnisse.</string>
     <string name="web_search_brave_desc">Datenschutzorientierte Such-API. Kostenlose Stufe verfügbar.</string>
     <string name="web_search_serper_desc">Schnelle Google-Such-API. 2.500 kostenlose Abfragen/Monat.</string>
     <string name="web_search_tavily_desc">KI-optimierte Such-API. Für LLM-Agenten entwickelt.</string>
@@ -405,10 +413,14 @@
     <string name="web_search_serper_key_hint">API-Schlüssel von serper.dev</string>
     <string name="web_search_tavily_key">Tavily-API-Schlüssel</string>
     <string name="web_search_tavily_key_hint">API-Schlüssel von tavily.com</string>
-    <string name="web_search_num_results">Max. Ergebnisse</string>
-    <string name="web_search_num_results_desc">Anzahl der abzurufenden Ergebnisse: %1$d (1-10)</string>
+    <string name="web_search_baidu_key">Baidu-Qianfan-API-Schlüssel</string>
+    <string name="web_search_baidu_key_hint">API-Schlüssel von qianfan.baidubce.com (V2-Konsole)</string>
+
+    <string name="web_search_zhipu">Zhipu AI Suche</string>
+    <string name="web_search_zhipu_desc">Zhipu Websuche. Mehrere Suchmaschinen (Sogou/Quark) mit starker Long-Tail-Abdeckung.</string>
+    <string name="web_search_zhipu_key">Zhipu API-Schlüssel</string>
+    <string name="web_search_zhipu_key_hint">API-Schlüssel von open.bigmodel.cn</string>
     <string name="web_search_searxng_fallback_desc">Öffentliche Instanzen sind oft ratenbegrenzt. Für zuverlässige Nutzung wird Selbst-Hosting empfohlen.</string>
-    <string name="web_search_advanced">Erweitert</string>
     <string name="web_search_searxng_url">SearXNG-Basis-URL</string>
     <string name="web_search_searxng_url_hint">https://searx.be</string>
 

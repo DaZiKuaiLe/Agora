@@ -22,6 +22,8 @@ class MessagePayloadBuilder(
     // Suspend callback for the PDF-render-failure notice, so this class doesn't
     // depend on ChatViewModel's SharedFlow.
     private val onSnackbar: suspend (String) -> Unit,
+    // Read at send time so a changed setting is honoured on the next message.
+    private val imageUploadMaxDimension: () -> Int = { 512 },
 ) {
     data class MessagePayload(
         val allImages: List<String>,
@@ -158,7 +160,11 @@ class MessagePayloadBuilder(
             }
         }
 
-        val processedImages = if (mediaUris.isNotEmpty()) generationManager.processImages(mediaUris, sliceConfigs) else emptyList()
+        val processedImages = if (mediaUris.isNotEmpty()) {
+            generationManager.processImages(mediaUris, sliceConfigs, imageUploadMaxDimension())
+        } else {
+            emptyList()
+        }
         preparedOwnedPaths += processedImages
         val allImages = processedImages + directPaths
 

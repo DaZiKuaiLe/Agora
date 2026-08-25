@@ -1,7 +1,6 @@
 package com.newoether.agora.data
 
 import com.newoether.agora.model.OpenAiServiceTiers
-import com.newoether.agora.model.ThinkingLevels
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -33,9 +32,6 @@ internal data class RestoredCustomFont(
  * device-local paths/models/sandbox state, app lifecycle metadata, backup scheduling, secrets,
  * and per-conversation overrides are intentionally absent.
  */
-internal fun importedContextCompactThresholdPercent(value: Int?): Int? =
-    value?.takeIf(CONTEXT_COMPACT_THRESHOLD_PERCENT_RANGE::contains)
-
 internal object PortableSettingsArchive {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -53,13 +49,8 @@ internal object PortableSettingsArchive {
         putNullableString("contextCompactModel", sm.contextCompactModel.first())
         put("contextCompactPrompt", JsonPrimitive(sm.contextCompactPrompt.first()))
         put("contextCompactRetainCount", JsonPrimitive(sm.contextCompactRetainCount.first()))
-        put("contextCompactThresholdPercent", JsonPrimitive(sm.contextCompactThresholdPercent.first()))
         put("codeExecutionEnabled", JsonPrimitive(sm.codeExecutionEnabled.first()))
         put("googleSearchEnabled", JsonPrimitive(sm.googleSearchEnabled.first()))
-        put("thinkingEnabled", JsonPrimitive(sm.thinkingEnabled.first()))
-        put("thinkingLevel", JsonPrimitive(sm.thinkingLevel.first()))
-        put("thinkingBudgetEnabled", JsonPrimitive(sm.thinkingBudgetEnabled.first()))
-        put("thinkingBudgetTokens", JsonPrimitive(sm.thinkingBudgetTokens.first()))
         put("openAiServiceTierEnabled", JsonPrimitive(sm.openAiServiceTierEnabled.first()))
         put("openAiServiceTier", JsonPrimitive(sm.openAiServiceTier.first()))
         put("openAiResponsesApiEnabled", JsonPrimitive(sm.openAiResponsesApiEnabled.first()))
@@ -89,11 +80,11 @@ internal object PortableSettingsArchive {
         put("appLanguage", JsonPrimitive(sm.appLanguage.first()))
         put("webSearchEnabled", JsonPrimitive(sm.webSearchEnabled.first()))
         put("webSearchProvider", JsonPrimitive(sm.webSearchProvider.first()))
-        put("webSearchNumResults", JsonPrimitive(sm.webSearchNumResults.first()))
         put("webSearchBaseUrl", JsonPrimitive(sm.webSearchBaseUrl.first()))
         put("imageGenEnabled", JsonPrimitive(sm.imageGenEnabled.first()))
         putNullableString("imageGenModel", sm.imageGenModel.first())
         put("imageGenSize", JsonPrimitive(sm.imageGenSize.first()))
+        put("imageUploadMaxDimension", JsonPrimitive(sm.imageUploadMaxDimension.first()))
         put("searchContextWindow", JsonPrimitive(sm.searchContextWindow.first()))
         put("searchMatchLimit", JsonPrimitive(sm.searchMatchLimit.first()))
         put("ragThreshold", JsonPrimitive(sm.ragThreshold.first()))
@@ -158,6 +149,7 @@ internal object PortableSettingsArchive {
         putNullableFloat("defaultTopP", sm.defaultTopP.first())
         putNullableFloat("defaultFrequencyPenalty", sm.defaultFrequencyPenalty.first())
         putNullableFloat("defaultPresencePenalty", sm.defaultPresencePenalty.first())
+        putEncoded("modelGenerationSettings", sm.modelGenerationSettings.first())
         putNullableString("activeSystemPromptId", sm.activeSystemPromptId.first())
     }
 
@@ -225,24 +217,8 @@ internal object PortableSettingsArchive {
         }
         obj.string("contextCompactPrompt")?.let { sm.saveContextCompactPrompt(it) }
         obj.int("contextCompactRetainCount")?.takeIf { it >= 0 }?.let { sm.saveContextCompactRetainCount(it) }
-        importedContextCompactThresholdPercent(
-            obj.int("contextCompactThresholdPercent"),
-        )?.let { sm.saveContextCompactThresholdPercent(it) }
         obj.boolean("codeExecutionEnabled")?.let { sm.saveCodeExecutionEnabled(it) }
         obj.boolean("googleSearchEnabled")?.let { sm.saveGoogleSearchEnabled(it) }
-        obj.boolean("thinkingEnabled")?.let { sm.saveThinkingEnabled(it) }
-        obj.string("thinkingLevel")?.let { level ->
-            val legacyBudgetTokens = ThinkingLevels.legacyBudgetTokens(level)
-            sm.saveThinkingLevel(ThinkingLevels.normalize(level))
-            if (!obj.containsKey("thinkingBudgetEnabled") && legacyBudgetTokens != null) {
-                sm.saveThinkingBudgetEnabled(true)
-            }
-            if (!obj.containsKey("thinkingBudgetTokens") && legacyBudgetTokens != null) {
-                sm.saveThinkingBudgetTokens(legacyBudgetTokens)
-            }
-        }
-        obj.boolean("thinkingBudgetEnabled")?.let { sm.saveThinkingBudgetEnabled(it) }
-        obj.int("thinkingBudgetTokens")?.let { sm.saveThinkingBudgetTokens(it) }
         obj.boolean("openAiServiceTierEnabled")?.let { sm.saveOpenAiServiceTierEnabled(it) }
         obj.string("openAiServiceTier")?.let {
             sm.saveOpenAiServiceTier(OpenAiServiceTiers.normalize(it))
@@ -330,13 +306,13 @@ internal object PortableSettingsArchive {
         obj.string("appLanguage")?.let { sm.saveAppLanguage(it) }
         obj.boolean("webSearchEnabled")?.let { sm.saveWebSearchEnabled(it) }
         obj.string("webSearchProvider")?.let { sm.saveWebSearchProvider(it) }
-        obj.int("webSearchNumResults")?.let { sm.saveWebSearchNumResults(it) }
         obj.string("webSearchBaseUrl")?.let { sm.saveWebSearchBaseUrl(it) }
         obj.boolean("imageGenEnabled")?.let { sm.saveImageGenEnabled(it) }
         if (obj.containsKey("imageGenModel")) {
             sm.saveImageGenModel(obj.nullableString("imageGenModel")?.let(::remapModel))
         }
         obj.string("imageGenSize")?.let { sm.saveImageGenSize(it) }
+        obj.int("imageUploadMaxDimension")?.let { sm.saveImageUploadMaxDimension(it) }
         obj.int("searchContextWindow")?.let { sm.saveSearchContextWindow(it) }
         obj.int("searchMatchLimit")?.let { sm.saveSearchMatchLimit(it) }
         obj.float("ragThreshold")?.let { sm.saveRagThreshold(it) }
@@ -477,6 +453,10 @@ internal object PortableSettingsArchive {
         if (obj.containsKey("defaultPresencePenalty")) {
             sm.saveDefaultPresencePenalty(obj.float("defaultPresencePenalty"))
         }
+        obj.decode<Map<String, ModelGenerationSettings>>("modelGenerationSettings")
+            ?.forEach { (modelId, settings) ->
+                sm.saveModelGenerationSetting(modelId, settings)
+            }
 
         val activePromptKey = when {
             obj.containsKey("activeSystemPromptId") -> "activeSystemPromptId"

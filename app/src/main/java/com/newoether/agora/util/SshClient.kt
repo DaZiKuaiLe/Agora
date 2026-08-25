@@ -11,6 +11,7 @@ import com.jcraft.jsch.UserInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.io.File
 
 /**
  * SSH client using JSch for shell command execution (exec channel)
@@ -205,6 +206,58 @@ class SshClient(
             null
         } catch (e: Exception) {
             "SFTP write failed: ${e.message}"
+        }
+    }
+
+    // ── file upload / download (binary, no base64) ─────────
+
+    /**
+     * Upload a local file to the remote path over SFTP as raw bytes.
+     * Returns null on success, error message string on failure.
+     */
+    suspend fun uploadFile(localPath: String, remotePath: String): String? = withSftp { sftp ->
+        try {
+            val parent = remotePath.substringBeforeLast('/', "")
+            if (parent.isNotBlank()) {
+                ensureParentDirs(sftp, parent)
+            }
+            val input = File(localPath).inputStream()
+            try {
+                sftp.put(input, remotePath, ChannelSftp.OVERWRITE)
+            } finally {
+                input.close()
+            }
+            null
+        } catch (e: Exception) {
+            "SFTP upload failed: ${e.message}"
+        }
+    }
+
+    /**
+     * Download a remote file into [localDir] as raw bytes, auto-incrementing the name on
+     * collision (a.jpg → a(1).jpg). Returns the absolute local path on success, error string on
+     * failure.
+     */
+    suspend fun downloadFile(remotePath: String, localDir: String): String? = withSftp { sftp ->
+        try {
+            File(localDir).mkdirs()
+            val destination = incrementName(File(localDir, File(remotePath).name))
+            sftp.get(remotePath, destination.absolutePath)
+            destination.absolutePath
+        } catch (e: Exception) {
+            "SFTP download failed: ${e.message}"
+        }
+    }
+
+    private fun incrementName(file: File): File {
+        if (!file.exists()) return file
+        val base = file.nameWithoutExtension
+        val ext = file.extension
+        var index = 1
+        while (true) {
+            val candidate = File(file.parentFile, "${base}($index).${ext.ifBlank { "" }}")
+            if (!candidate.exists()) return candidate
+            index++
         }
     }
 

@@ -12,32 +12,43 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.newoether.agora.R
-import com.newoether.agora.data.ConversationSettings
+import com.newoether.agora.data.ModelGenerationSettings
 import com.newoether.agora.model.ContextBudget
+import com.newoether.agora.ui.common.ThinkingControlPanel
 import java.util.Locale
 
 @Composable
 fun AdvancedSettingsDialog(
-    overrides: ConversationSettings,
-    globalDefaults: ConversationSettings,
-    onSave: (ConversationSettings) -> Unit,
-    onResetToDefaults: () -> Unit,
+    current: ModelGenerationSettings,
+    providerName: String?,
+    onSave: (ModelGenerationSettings) -> Unit,
+    onReset: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    var contextWindow by remember { mutableStateOf(overrides.contextWindow) }
-    var temperature by remember { mutableStateOf(overrides.temperature) }
-    var maxTokens by remember { mutableStateOf(overrides.maxTokens) }
-    var topP by remember { mutableStateOf(overrides.topP) }
-    var frequencyPenalty by remember { mutableStateOf(overrides.frequencyPenalty) }
-    var presencePenalty by remember { mutableStateOf(overrides.presencePenalty) }
+    var contextLimit by remember { mutableStateOf(current.contextLimit) }
+    var compactThreshold by remember { mutableStateOf(current.compactThreshold) }
+    var temperature by remember { mutableStateOf(current.temperature) }
+    var maxTokens by remember { mutableStateOf(current.maxTokens) }
+    var topP by remember { mutableStateOf(current.topP) }
+    var frequencyPenalty by remember { mutableStateOf(current.frequencyPenalty) }
+    var presencePenalty by remember { mutableStateOf(current.presencePenalty) }
+    var thinkingEnabled by remember { mutableStateOf(current.thinkingEnabled) }
+    var thinkingLevel by remember { mutableStateOf(current.thinkingLevel) }
+    var thinkingBudgetEnabled by remember { mutableStateOf(current.thinkingBudgetEnabled) }
+    var thinkingBudgetTokens by remember { mutableStateOf(current.thinkingBudgetTokens) }
 
-    fun currentSettings() = overrides.copy(
-        contextWindow = contextWindow,
+    fun currentSettings() = current.copy(
+        contextLimit = contextLimit,
+        compactThreshold = compactThreshold,
         temperature = temperature,
         maxTokens = maxTokens,
         topP = topP,
         frequencyPenalty = frequencyPenalty,
-        presencePenalty = presencePenalty
+        presencePenalty = presencePenalty,
+        thinkingEnabled = thinkingEnabled,
+        thinkingLevel = thinkingLevel,
+        thinkingBudgetEnabled = thinkingBudgetEnabled,
+        thinkingBudgetTokens = thinkingBudgetTokens
     )
 
     AlertDialog(
@@ -49,23 +60,31 @@ fun AdvancedSettingsDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState())
             ) {
                 val fmt2: (Float) -> String = { v -> String.format(Locale.US, "%.2f", v) }
-                val gDefaults = globalDefaults
 
-                // Context Window
+                // Context limit (real model ceiling, user-supplied).
                 AdvancedParamRow(
-                    label = stringResource(R.string.context_window),
-                    value = contextWindow?.let(ContextBudget::normalize),
-                    defaultVal = gDefaults.contextWindow?.let(ContextBudget::normalize),
+                    label = stringResource(R.string.context_limit),
+                    value = contextLimit,
                     presets = ContextBudget.PRESETS,
                     format = ContextBudget::compactLabel,
-                    onChange = { contextWindow = it },
-                    onReset = { contextWindow = null }
+                    onChange = { contextLimit = it },
+                    onReset = { contextLimit = null },
+                    defaultValue = ContextBudget.DEFAULT_CONTEXT_LIMIT
+                )
+                // Compaction threshold (absolute token count).
+                AdvancedParamRow(
+                    label = stringResource(R.string.compact_threshold),
+                    value = compactThreshold,
+                    presets = ContextBudget.PRESETS,
+                    format = ContextBudget::compactLabel,
+                    onChange = { compactThreshold = it },
+                    onReset = { compactThreshold = null },
+                    defaultValue = ContextBudget.DEFAULT_COMPACT_THRESHOLD
                 )
                 // Temperature
                 AdvancedParamRow(
                     label = stringResource(R.string.gen_temperature),
                     value = temperature,
-                    defaultVal = gDefaults.temperature,
                     valueRange = 0f..2f,
                     format = fmt2,
                     onChange = { temperature = it },
@@ -76,7 +95,6 @@ fun AdvancedSettingsDialog(
                 AdvancedParamRow(
                     label = stringResource(R.string.gen_max_tokens),
                     value = maxTokens,
-                    defaultVal = gDefaults.maxTokens,
                     presets = maxTokensPresets,
                     format = { it.toString() },
                     onChange = { maxTokens = it },
@@ -86,7 +104,6 @@ fun AdvancedSettingsDialog(
                 AdvancedParamRow(
                     label = stringResource(R.string.gen_top_p),
                     value = topP,
-                    defaultVal = gDefaults.topP,
                     valueRange = 0f..1f,
                     format = fmt2,
                     onChange = { topP = it },
@@ -96,7 +113,6 @@ fun AdvancedSettingsDialog(
                 AdvancedParamRow(
                     label = stringResource(R.string.gen_frequency_penalty),
                     value = frequencyPenalty,
-                    defaultVal = gDefaults.frequencyPenalty,
                     valueRange = -2f..2f,
                     format = fmt2,
                     onChange = { frequencyPenalty = it },
@@ -106,20 +122,37 @@ fun AdvancedSettingsDialog(
                 AdvancedParamRow(
                     label = stringResource(R.string.gen_presence_penalty),
                     value = presencePenalty,
-                    defaultVal = gDefaults.presencePenalty,
                     valueRange = -2f..2f,
                     format = fmt2,
                     onChange = { presencePenalty = it },
                     onReset = { presencePenalty = null }
+                )
+                // Thinking depth (provider-specific tiers).
+                Spacer(modifier = Modifier.height(12.dp))
+                ThinkingControlPanel(
+                    enabled = thinkingEnabled,
+                    level = thinkingLevel,
+                    budgetEnabled = thinkingBudgetEnabled,
+                    budgetTokens = thinkingBudgetTokens,
+                    onEnabledChange = { thinkingEnabled = it },
+                    onLevelChange = { thinkingLevel = it },
+                    onBudgetEnabledChange = { thinkingBudgetEnabled = it },
+                    onBudgetTokensChange = { thinkingBudgetTokens = it },
+                    providerName = providerName,
+                    showHeader = true,
+                    animateSections = false
                 )
             }
         },
         confirmButton = {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 TextButton(onClick = {
-                    onResetToDefaults()
-                    contextWindow = null; temperature = null; maxTokens = null
-                    topP = null; frequencyPenalty = null; presencePenalty = null
+                    onReset()
+                    contextLimit = null; compactThreshold = null
+                    temperature = null; maxTokens = null; topP = null
+                    frequencyPenalty = null; presencePenalty = null
+                    thinkingEnabled = true; thinkingLevel = ""
+                    thinkingBudgetEnabled = false; thinkingBudgetTokens = 4096
                 }) { Text(stringResource(R.string.gen_reset)) }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     TextButton(onClick = onDismiss) {
@@ -137,22 +170,20 @@ fun AdvancedSettingsDialog(
 
 /**
  * Parameter row for the Advanced dialog. Always shows value.
- * When value is null, shows the default value passed from global settings.
+ * When value is null, shows "not specified" and the slider sits at mid-range.
  * Reset clears the local override (doesn't close dialog).
  */
 @Composable
 private fun AdvancedParamRow(
     label: String,
     value: Float?,
-    defaultVal: Float?,
     valueRange: ClosedFloatingPointRange<Float>,
     steps: Int = 0,
     format: (Float) -> String,
     onChange: (Float) -> Unit,
     onReset: () -> Unit
 ) {
-    val hasDefault = defaultVal != null
-    val sliderPos = value ?: defaultVal ?: (valueRange.start + valueRange.endInclusive) / 2f
+    val sliderPos = value ?: (valueRange.start + valueRange.endInclusive) / 2f
     val isOverride = value != null
     Column(
         modifier = Modifier
@@ -168,7 +199,7 @@ private fun AdvancedParamRow(
             )
             if (isOverride) {
                 Text(
-                    text = format(sliderPos),
+                    text = format(value),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Bold,
@@ -179,13 +210,6 @@ private fun AdvancedParamRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
                     modifier = Modifier.clickable(onClick = onReset)
-                )
-            } else if (hasDefault) {
-                Text(
-                    text = format(sliderPos),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.Normal
                 )
             } else {
                 Text(
@@ -209,17 +233,15 @@ private fun AdvancedParamRow(
 private fun AdvancedParamRow(
     label: String,
     value: Int?,
-    defaultVal: Int?,
     presets: IntArray,
     format: (Int) -> String,
     onChange: (Int) -> Unit,
-    onReset: () -> Unit
+    onReset: () -> Unit,
+    defaultValue: Int? = null,
 ) {
     fun toIndex(v: Int) = presets.indices.minByOrNull { kotlin.math.abs(presets[it] - v) } ?: 3
-    val hasDefault = defaultVal != null
-    val effective = value ?: defaultVal ?: 4096
-    val index = toIndex(effective)
-    val isOverride = value != null
+    val effective = value ?: defaultValue
+    val index = if (effective != null) toIndex(effective) else 3.coerceIn(0, presets.lastIndex)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -232,9 +254,9 @@ private fun AdvancedParamRow(
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.weight(1f)
             )
-            if (isOverride) {
+            if (value != null) {
                 Text(
-                    text = format(value!!),
+                    text = format(value),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Bold,
@@ -246,7 +268,7 @@ private fun AdvancedParamRow(
                     color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
                     modifier = Modifier.clickable(onClick = onReset)
                 )
-            } else if (hasDefault) {
+            } else if (effective != null) {
                 Text(
                     text = format(effective),
                     style = MaterialTheme.typography.labelMedium,

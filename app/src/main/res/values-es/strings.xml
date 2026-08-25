@@ -231,6 +231,10 @@
     <string name="image_gen_size">Tamaño predeterminado</string>
     <string name="image_gen_size_hint">1024x1024</string>
     <string name="image_gen_show_all">Mostrar todos los modelos</string>
+    <string name="settings_image_upload">Subida de imágenes</string>
+    <string name="settings_image_upload_desc">Controla la reducción de tamaño de las imágenes subidas antes de enviarlas</string>
+    <string name="image_upload_max_dimension">Límite de resolución</string>
+    <string name="image_upload_max_dimension_desc">Lado más largo de una imagen subida. Más bajo = menos tokens, menos detalle.</string>
     <string name="tool_generate_image">Generar imagen</string>
     <string name="tool_generating_image">Generando imagen…</string>
     <string name="tool_generated_image">Imagen generada</string>
@@ -319,6 +323,8 @@
     <string name="context_window">Ventana de contexto</string>
     <string name="context_window_desc">Contexto máximo disponible para una generación</string>
     <string name="context_window_default">Ventana de contexto predeterminada</string>
+    <string name="context_limit">Límite de contexto</string>
+    <string name="compact_threshold">Umbral de compactación</string>
     <string name="context_token_budget_value">Aproximadamente %1$s tokens</string>
     <string name="context_retain">Conservar %1$d mensajes recientes</string>
     <string name="context_visualize">Visualizar el despliegue del contexto</string>
@@ -393,6 +399,8 @@
     <string name="web_search_tavily">Tavily</string>
     <string name="web_search_searxng">SearXNG</string>
     <string name="web_search_duckduckgo">DuckDuckGo</string>
+    <string name="web_search_baidu">Búsqueda de Baidu</string>
+    <string name="web_search_baidu_desc">Búsqueda IA de Baidu Qianfan. Cobertura china fiable y resultados oportunos.</string>
     <string name="web_search_brave_desc">API de búsqueda centrada en la privacidad. Nivel gratuito disponible.</string>
     <string name="web_search_serper_desc">API rápida de Google Search. 2.500 consultas gratis al mes.</string>
     <string name="web_search_tavily_desc">API de búsqueda optimizada para IA. Creada para agentes LLM.</string>
@@ -405,10 +413,14 @@
     <string name="web_search_serper_key_hint">Clave de API de serper.dev</string>
     <string name="web_search_tavily_key">Clave de API de Tavily</string>
     <string name="web_search_tavily_key_hint">Clave de API de tavily.com</string>
-    <string name="web_search_num_results">Máx. resultados</string>
-    <string name="web_search_num_results_desc">Número de resultados a obtener: %1$d (1-10)</string>
+    <string name="web_search_baidu_key">Clave de API de Baidu Qianfan</string>
+    <string name="web_search_baidu_key_hint">Clave de API de qianfan.baidubce.com (consola V2)</string>
+
+    <string name="web_search_zhipu">Búsqueda IA Zhipu</string>
+    <string name="web_search_zhipu_desc">Búsqueda web de Zhipu. Multi-motor (Sogou/Quark) con gran recuperación de nicho.</string>
+    <string name="web_search_zhipu_key">Clave de API de Zhipu</string>
+    <string name="web_search_zhipu_key_hint">Clave de API de open.bigmodel.cn</string>
     <string name="web_search_searxng_fallback_desc">Las instancias públicas suelen tener límites de uso. Se recomienda el autoalojamiento para un uso fiable.</string>
-    <string name="web_search_advanced">Avanzado</string>
     <string name="web_search_searxng_url">URL base de SearXNG</string>
     <string name="web_search_searxng_url_hint">https://searx.be</string>
 

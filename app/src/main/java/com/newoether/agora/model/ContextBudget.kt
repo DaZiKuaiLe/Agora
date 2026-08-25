@@ -6,6 +6,12 @@ object ContextBudget {
     const val MIN_TOKENS = 4_096
     const val MAX_TOKENS = 1_048_576
 
+    /** Default context ceiling used when a model has no per-model `contextLimit` override. */
+    const val DEFAULT_CONTEXT_LIMIT = 524_288
+
+    /** Default compaction trigger used when a model has no per-model `compactThreshold` override. */
+    const val DEFAULT_COMPACT_THRESHOLD = 262_144
+
     val PRESETS = intArrayOf(
         4_096,
         8_192,

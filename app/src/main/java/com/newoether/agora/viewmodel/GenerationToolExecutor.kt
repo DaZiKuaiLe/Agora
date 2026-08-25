@@ -89,6 +89,7 @@ internal class GenerationToolExecutor private constructor(
             val shellProvider = ShellToolProvider(
                 sandboxFactory = sandboxFactory,
                 imageStore = ToolImageStore(app),
+                downloadsDir = java.io.File(app.filesDir, "downloads"),
             ).also { provider ->
                 provider.confirm = confirmShellCommand
             }

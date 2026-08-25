@@ -31,7 +31,6 @@ class ConversationCompactControllerTest {
         assertFalse(
             compactor.automaticNeeded(
                 "conversation",
-                4096,
                 automaticConfig().copy(enabled = false),
             ),
         )
@@ -77,7 +76,6 @@ class ConversationCompactControllerTest {
             launcher,
         ).startAutomaticStandard(
             conversationId = "conversation",
-            contextLimit = 4096,
             config = automaticConfig(),
             state = state,
         )
@@ -220,7 +218,6 @@ class ConversationCompactControllerTest {
             launcher,
         ).startAutomaticStandard(
             conversationId = "conversation",
-            contextLimit = 4096,
             config = automaticConfig(),
             state = state,
         )
@@ -257,7 +254,6 @@ class ConversationCompactControllerTest {
             launcher,
         ).startAutomaticBeforeSend(
             "conversation",
-            4096,
             automaticConfig(),
             state,
         )
@@ -282,7 +278,6 @@ class ConversationCompactControllerTest {
             launcher,
         ).startAutomaticBeforeSend(
             "conversation",
-            4096,
             automaticConfig(),
             state,
         )
@@ -466,7 +461,6 @@ private class FakeCompactOperation(
 ) : ContextCompactOperation {
     override suspend fun automaticNeeded(
         conversationId: String,
-        contextLimit: Int,
         config: AutomaticCompactConfig,
     ): Boolean = automaticNeeded
 }

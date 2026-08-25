@@ -22,18 +22,14 @@ import com.newoether.agora.data.modelAliasDisplayName
 import com.newoether.agora.data.modelDisplayName
 import com.newoether.agora.data.providerDisplayName
 import com.newoether.agora.model.ModelId
-import com.newoether.agora.model.ContextBudget
 import com.newoether.agora.ui.common.PersistedSliderFeedbackGate
 import com.newoether.agora.viewmodel.ChatViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsContextPage(viewModel: ChatViewModel, onBack: () -> Unit) {
-    val window by viewModel.settings.maxContextWindow.collectAsState()
     val visualize by viewModel.settings.visualizeContextRollout.collectAsState()
     val compact by viewModel.settings.contextCompactEnabled.collectAsState()
-    val thresholdPercent by
-        viewModel.settings.contextCompactThresholdPercent.collectAsState()
     val compactModel by viewModel.settings.contextCompactModel.collectAsState()
     val compactPrompt by viewModel.settings.contextCompactPrompt.collectAsState()
     val retainCount by viewModel.settings.contextCompactRetainCount.collectAsState()
@@ -51,43 +47,8 @@ fun SettingsContextPage(viewModel: ChatViewModel, onBack: () -> Unit) {
     ) {
         SettingsGroupColumn {
             SettingsGroup(
-                title = stringResource(R.string.context_window_default),
+                title = stringResource(R.string.context_visualize),
                 items = listOf(
-                    {
-                        val presets = ContextBudget.PRESETS
-                        fun nearestIndex(value: Int): Int = presets.indices.minByOrNull {
-                            kotlin.math.abs(presets[it] - value)
-                        } ?: 3
-                        val sliderGate = remember {
-                            PersistedSliderFeedbackGate(
-                                initialPersisted = window,
-                                toDisplay = { value ->
-                                nearestIndex(value).toFloat()
-                                },
-                            )
-                        }
-                        LaunchedEffect(window) { sliderGate.reconcile(window) }
-                        val draftIndex = sliderGate.displayed
-                        val draft = presets[draftIndex.toInt().coerceIn(0, presets.lastIndex)]
-                        ContextSliderItem(
-                            icon = Icons.Default.Memory,
-                            label = stringResource(R.string.context_window),
-                            description = stringResource(R.string.context_window_desc),
-                            displayValue = ContextBudget.compactLabel(draft),
-                            sliderValue = draftIndex,
-                            valueRange = 0f..presets.lastIndex.toFloat(),
-                            steps = presets.size - 2,
-                            onValueChange = sliderGate::updateFromGesture,
-                            onValueChangeFinished = {
-                                if (draft != window) {
-                                    sliderGate.expectPersisted(draft, draftIndex)
-                                    viewModel.settings.setMaxContextWindow(draft)
-                                } else {
-                                    sliderGate.settleWithoutWrite(window, draftIndex)
-                                }
-                            },
-                        )
-                    },
                     {
                         SettingsItem(
                             headlineContent = { Text(stringResource(R.string.context_visualize)) },
@@ -156,48 +117,6 @@ fun SettingsContextPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                 viewModel.settings.setContextCompactEnabled(!compact)
                             },
                         )
-                    }
-                    if (compact) {
-                        add {
-                            val sliderGate = remember {
-                                PersistedSliderFeedbackGate(
-                                    initialPersisted = thresholdPercent,
-                                    toDisplay = { it.toFloat() },
-                                )
-                            }
-                            LaunchedEffect(thresholdPercent) {
-                                sliderGate.reconcile(thresholdPercent)
-                            }
-                            val draft = sliderGate.displayed
-                            ContextSliderItem(
-                                icon = Icons.Default.Compress,
-                                label = stringResource(R.string.context_compact_threshold),
-                                description = stringResource(
-                                    R.string.context_compact_threshold_desc,
-                                ),
-                                displayValue = "${draft.toInt()}%",
-                                sliderValue = draft,
-                                valueRange = 50f..100f,
-                                steps = 0,
-                                onValueChange = { sliderGate.updateFromGesture(kotlin.math.round(it)) },
-                                onValueChangeFinished = {
-                                    val committed = draft.toInt().coerceIn(50, 100)
-                                    if (committed != thresholdPercent) {
-                                        sliderGate.expectPersisted(
-                                            committed,
-                                            committed.toFloat(),
-                                        )
-                                        viewModel.settings
-                                            .setContextCompactThresholdPercent(committed)
-                                    } else {
-                                        sliderGate.settleWithoutWrite(
-                                            thresholdPercent,
-                                            committed.toFloat(),
-                                        )
-                                    }
-                                },
-                            )
-                        }
                     }
                     add {
                         val sliderGate = remember {

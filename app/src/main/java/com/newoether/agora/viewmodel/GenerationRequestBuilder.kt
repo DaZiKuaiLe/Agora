@@ -2,7 +2,8 @@ package com.newoether.agora.viewmodel
 
 import android.content.Context
 import com.newoether.agora.R
-import com.newoether.agora.data.ConversationSettings
+import com.newoether.agora.data.ConversationToolState
+import com.newoether.agora.data.ModelGenerationSettings
 import com.newoether.agora.data.MemoryManager
 import com.newoether.agora.data.SkillManager
 import com.newoether.agora.data.PredefinedVariables
@@ -15,6 +16,7 @@ import com.newoether.agora.data.repository.SettingsRepository
 import com.newoether.agora.model.ModelId
 import com.newoether.agora.model.ContextBudget
 import com.newoether.agora.model.OpenAiServiceTiers
+import com.newoether.agora.model.ThinkingLevels
 import com.newoether.agora.model.apiModelName
 import com.newoether.agora.util.Constants
 import kotlinx.coroutines.Dispatchers
@@ -36,7 +38,7 @@ class GenerationRequestBuilder(
     private val ragManager: RagManager,
     private val appContext: Context,
     // This remains a StateFlow because buildEffectiveConversationSettings reads its current value.
-    private val pendingConversationSettings: StateFlow<ConversationSettings?>,
+    private val pendingConversationSettings: StateFlow<ConversationToolState?>,
     // resolveProviderKey uses this callback to emit snackbar messages.
     private val onSnackbar: (String) -> Unit,
 ) {
@@ -101,33 +103,33 @@ class GenerationRequestBuilder(
         return providerRegistry.getEffectiveBaseUrl(providerRegistry.providerForModel(model)) ?: ""
     }
 
-    fun buildEffectiveConversationSettings(conversationId: String): ConversationSettings {
+    fun buildEffectiveConversationSettings(conversationId: String, modelId: String): EffectiveGenerationSettings {
         val overrides = settings.conversationSettings.value[conversationId]
             ?: pendingConversationSettings.value  // new chat: may not be saved to map yet
-            ?: ConversationSettings()
-        return ConversationSettings(
-            contextWindow = ContextBudget.normalize(
-                overrides.contextWindow ?: settings.maxContextWindow.value
+            ?: ConversationToolState()
+        val canonicalModelId = providerRegistry.canonicalModelId(modelId)
+        val modelGen = settings.modelGenerationSettings.value[canonicalModelId]
+            ?: ModelGenerationSettings()
+        val providerName = providerRegistry.providerForModel(canonicalModelId)
+        val defaultThinkingLevel = ThinkingLevels.defaultEffortForProvider(providerName)
+        return EffectiveGenerationSettings(
+            maxContextWindow = ContextBudget.normalize(
+                modelGen.contextLimit ?: ContextBudget.DEFAULT_CONTEXT_LIMIT
             ),
-            temperature = overrides.temperature ?: settings.defaultTemperature.value,
-            maxTokens = overrides.maxTokens ?: settings.defaultMaxTokens.value,
-            topP = overrides.topP ?: settings.defaultTopP.value,
-            frequencyPenalty = overrides.frequencyPenalty ?: settings.defaultFrequencyPenalty.value,
-            presencePenalty = overrides.presencePenalty ?: settings.defaultPresencePenalty.value,
             codeExecutionEnabled = overrides.codeExecutionEnabled ?: settings.codeExecutionEnabled.value,
             googleSearchEnabled = overrides.googleSearchEnabled ?: settings.googleSearchEnabled.value,
             openAiWebSearchEnabled = overrides.openAiWebSearchEnabled ?: true,
-            thinkingEnabled = overrides.thinkingEnabled ?: settings.thinkingEnabled.value,
-            thinkingLevel = overrides.thinkingLevel ?: settings.thinkingLevel.value,
-            thinkingBudgetEnabled = overrides.thinkingBudgetEnabled ?: settings.thinkingBudgetEnabled.value,
-            thinkingBudgetTokens = overrides.thinkingBudgetTokens ?: settings.thinkingBudgetTokens.value,
-            openAiServiceTierEnabled =
-                overrides.openAiServiceTierEnabled ?: settings.openAiServiceTierEnabled.value,
-            openAiServiceTier = OpenAiServiceTiers.normalize(
-                overrides.openAiServiceTier ?: settings.openAiServiceTier.value,
-            ),
             webSearchEnabled = if (settings.webSearchEnabled.value) (overrides.webSearchEnabled ?: true) else false,
-            shellEnabled = if (settings.shellEnabled.value) (overrides.shellEnabled ?: true) else false
+            shellEnabled = if (settings.shellEnabled.value) (overrides.shellEnabled ?: true) else false,
+            thinkingEnabled = modelGen.thinkingEnabled,
+            thinkingLevel = modelGen.thinkingLevel.ifBlank { defaultThinkingLevel },
+            thinkingBudgetEnabled = modelGen.thinkingBudgetEnabled,
+            thinkingBudgetTokens = modelGen.thinkingBudgetTokens,
+            temperature = modelGen.temperature ?: settings.defaultTemperature.value,
+            maxTokens = modelGen.maxTokens ?: settings.defaultMaxTokens.value,
+            topP = modelGen.topP ?: settings.defaultTopP.value,
+            frequencyPenalty = modelGen.frequencyPenalty ?: settings.defaultFrequencyPenalty.value,
+            presencePenalty = modelGen.presencePenalty ?: settings.defaultPresencePenalty.value,
         )
     }
 
@@ -147,7 +149,11 @@ class GenerationRequestBuilder(
     ): GenerationAdmissionSnapshot {
         val selectedModelId = providerRegistry.canonicalModelId(modelId)
         val providerName = providerRegistry.providerForModel(selectedModelId)
-        val effectiveSettings = buildEffectiveConversationSettings(conversationId)
+        val effectiveSettings = buildEffectiveConversationSettings(conversationId, selectedModelId)
+        val modelGen = settings.modelGenerationSettings.value[selectedModelId]
+            ?: ModelGenerationSettings()
+        val compactThreshold = modelGen.compactThreshold
+            ?: ContextBudget.DEFAULT_COMPACT_THRESHOLD
         val frozenKey = settings.awaitActiveKey(providerName).orEmpty()
         check(providerRegistry.isConfigured(providerName, frozenKey)) {
             "Provider is no longer configured: $providerName"
@@ -185,7 +191,7 @@ class GenerationRequestBuilder(
         )
         val automaticCompact = AutomaticCompactConfig(
             enabled = settings.contextCompactEnabled.value,
-            thresholdPercent = settings.contextCompactThresholdPercent.value,
+            compactThreshold = compactThreshold,
             request = CompactRequest(
                 model = compactModel,
                 prompt = settings.contextCompactPrompt.value,
@@ -256,7 +262,7 @@ class GenerationRequestBuilder(
             resolvedSystemPrompt = null,
             resolvedUserPrepend = null,
             resolvedUserPostpend = null,
-            effectiveSettings = buildEffectiveConversationSettings(conversationId),
+            effectiveSettings = buildEffectiveConversationSettings(conversationId, selectedModelId),
             currentId = conversationId,
         )
         val resolved = buildEffectiveSystemPrompt(
@@ -286,7 +292,7 @@ class GenerationRequestBuilder(
         resolvedSystemPrompt: String?,
         resolvedUserPrepend: String?,
         resolvedUserPostpend: String?,
-        effectiveSettings: ConversationSettings,
+        effectiveSettings: EffectiveGenerationSettings,
         currentId: String
     ): Pair<GenerationConfig, GenerationContext> {
         val imageGenModel = settings.imageGenModel.value
@@ -308,23 +314,21 @@ class GenerationRequestBuilder(
             modelId = ModelId.parse(providerRegistry.canonicalModelId(modelId)).modelName,
             apiKey = activeKey,
             effectiveSystemPrompt = effectiveSystemPromptWithSkills,
-            maxContextWindow = ContextBudget.normalize(
-                effectiveSettings.contextWindow ?: settings.maxContextWindow.value
-            ),
-            codeExecutionEnabled = effectiveSettings.codeExecutionEnabled ?: settings.codeExecutionEnabled.value,
-            googleSearchEnabled = effectiveSettings.googleSearchEnabled ?: settings.googleSearchEnabled.value,
-            thinkingEnabled = effectiveSettings.thinkingEnabled ?: settings.thinkingEnabled.value,
-            thinkingLevel = effectiveSettings.thinkingLevel ?: settings.thinkingLevel.value,
-            thinkingBudgetEnabled = effectiveSettings.thinkingBudgetEnabled ?: settings.thinkingBudgetEnabled.value,
-            thinkingBudgetTokens = effectiveSettings.thinkingBudgetTokens ?: settings.thinkingBudgetTokens.value,
+            maxContextWindow = effectiveSettings.maxContextWindow,
+            codeExecutionEnabled = effectiveSettings.codeExecutionEnabled,
+            googleSearchEnabled = effectiveSettings.googleSearchEnabled,
+            thinkingEnabled = effectiveSettings.thinkingEnabled,
+            thinkingLevel = effectiveSettings.thinkingLevel,
+            thinkingBudgetEnabled = effectiveSettings.thinkingBudgetEnabled,
+            thinkingBudgetTokens = effectiveSettings.thinkingBudgetTokens,
             openAiServiceTier = OpenAiServiceTiers.requestValue(
-                enabled = effectiveSettings.openAiServiceTierEnabled == true,
-                value = effectiveSettings.openAiServiceTier,
+                enabled = settings.openAiServiceTierEnabled.value,
+                value = settings.openAiServiceTier.value,
                 responsesApiEnabled = responsesApiEnabled,
             ),
             responsesApiEnabled = responsesApiEnabled,
             openAiWebSearchEnabled =
-                effectiveSettings.openAiWebSearchEnabled == true && responsesApiEnabled,
+                effectiveSettings.openAiWebSearchEnabled && responsesApiEnabled,
             baseUrl = providerRegistry.getEffectiveBaseUrl(providerName),
             userPrepend = resolvedUserPrepend,
             userPostpend = resolvedUserPostpend,
@@ -348,10 +352,9 @@ class GenerationRequestBuilder(
             ragThreshold = settings.ragThreshold.value,
             searchMatchLimit = settings.searchMatchLimit.value,
             searchContextWindow = settings.searchContextWindow.value,
-            webSearchEnabled = effectiveSettings.webSearchEnabled ?: settings.webSearchEnabled.value,
+            webSearchEnabled = effectiveSettings.webSearchEnabled,
             webSearchApiKeys = settings.webSearchApiKeys.value,
             webSearchProvider = settings.webSearchProvider.value,
-            webSearchNumResults = settings.webSearchNumResults.value,
             webSearchBaseUrl = settings.webSearchBaseUrl.value,
             imageGenEnabled = settings.imageGenEnabled.value && imageGenModel?.contains(":") == true,
             imageGenApiKey = resolveImageGenApiKey(imageGenModel),
@@ -359,7 +362,7 @@ class GenerationRequestBuilder(
             imageGenModel = resolveImageGenModelId(imageGenModel),
             imageGenSize = settings.imageGenSize.value,
             automationToolsEnabled = settings.automationToolsEnabled.value,
-            shellEnabled = effectiveSettings.shellEnabled ?: settings.shellEnabled.value,
+            shellEnabled = effectiveSettings.shellEnabled,
             shellDevices = settings.shellDevices.value,
             sandboxEnabled = settings.sandboxEnabled.value,
             sandboxSharedStorageEnabled = settings.sandboxSharedStorageEnabled.value,

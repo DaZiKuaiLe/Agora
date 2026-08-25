@@ -47,7 +47,6 @@ internal class BoundRunGenerationLauncher(
     private val generationManagerProvider: () -> GenerationManager,
     private val automaticCompactNeeded: suspend (
         conversationId: String,
-        contextLimit: Int,
         config: AutomaticCompactConfig,
     ) -> Boolean,
     private val terminalSettlement: GenerationTerminalSettlementController,
@@ -107,7 +106,6 @@ internal class BoundRunGenerationLauncher(
                         if (
                             automaticCompactNeeded(
                                 request.conversationId,
-                                request.snapshot.config.maxContextWindow,
                                 automaticCompactConfig,
                             )
                         ) {

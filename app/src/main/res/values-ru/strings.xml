@@ -231,6 +231,10 @@
     <string name="image_gen_size">Размер по умолчанию</string>
     <string name="image_gen_size_hint">1024x1024</string>
     <string name="image_gen_show_all">Показать все модели</string>
+    <string name="settings_image_upload">Загрузка изображений</string>
+    <string name="settings_image_upload_desc">Управляет масштабированием загруженных изображений перед отправкой</string>
+    <string name="image_upload_max_dimension">Лимит разрешения</string>
+    <string name="image_upload_max_dimension_desc">Наибольшая сторона загруженного изображения. Ниже = меньше токенов, меньше деталей.</string>
     <string name="tool_generate_image">Создать изображение</string>
     <string name="tool_generating_image">Создание изображения…</string>
     <string name="tool_generated_image">Изображение создано</string>
@@ -319,6 +323,8 @@
     <string name="context_window">Окно контекста</string>
     <string name="context_window_desc">Максимальный контекст, доступный для одной генерации</string>
     <string name="context_window_default">Окно контекста по умолчанию</string>
+    <string name="context_limit">Лимит контекста</string>
+    <string name="compact_threshold">Порог сжатия</string>
     <string name="context_token_budget_value">Примерно %1$s токенов</string>
     <string name="context_retain">Сохранять %1$d последних сообщений</string>
     <string name="context_visualize">Визуализировать заполнение контекста</string>
@@ -393,6 +399,8 @@
     <string name="web_search_tavily">Tavily</string>
     <string name="web_search_searxng">SearXNG</string>
     <string name="web_search_duckduckgo">DuckDuckGo</string>
+    <string name="web_search_baidu">Поиск Baidu</string>
+    <string name="web_search_baidu_desc">ИИ-поиск Baidu Qianfan. Надёжное покрытие китайского сегмента и актуальные результаты.</string>
     <string name="web_search_brave_desc">API поиска с упором на конфиденциальность. Доступен бесплатный тариф.</string>
     <string name="web_search_serper_desc">Быстрый API Google Search. 2 500 бесплатных запросов в месяц.</string>
     <string name="web_search_tavily_desc">API поиска, оптимизированный для ИИ. Создан для LLM-агентов.</string>
@@ -405,10 +413,14 @@
     <string name="web_search_serper_key_hint">API-ключ с serper.dev</string>
     <string name="web_search_tavily_key">API-ключ Tavily</string>
     <string name="web_search_tavily_key_hint">API-ключ с tavily.com</string>
-    <string name="web_search_num_results">Макс. результатов</string>
-    <string name="web_search_num_results_desc">Количество получаемых результатов: %1$d (1-10)</string>
+    <string name="web_search_baidu_key">API-ключ Baidu Qianfan</string>
+    <string name="web_search_baidu_key_hint">API-ключ с qianfan.baidubce.com (консоль V2)</string>
+
+    <string name="web_search_zhipu">Поиск ИИ Zhipu</string>
+    <string name="web_search_zhipu_desc">Веб-поиск Zhipu. Много движков (Sogou/Quark) с сильным охватом нишевого контента.</string>
+    <string name="web_search_zhipu_key">API-ключ Zhipu</string>
+    <string name="web_search_zhipu_key_hint">API-ключ с open.bigmodel.cn</string>
     <string name="web_search_searxng_fallback_desc">Публичные экземпляры часто имеют ограничения по частоте. Для надёжной работы рекомендуется собственный хостинг.</string>
-    <string name="web_search_advanced">Дополнительно</string>
     <string name="web_search_searxng_url">Базовый URL SearXNG</string>
     <string name="web_search_searxng_url_hint">https://searx.be</string>
 

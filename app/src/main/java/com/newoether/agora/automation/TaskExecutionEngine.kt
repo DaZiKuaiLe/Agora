@@ -238,7 +238,6 @@ class TaskExecutionEngine(
             val guidanceClaimRevision = state.guidanceClaimRevision()
             val compactLaunch = compactController.startAutomaticStandard(
                 conversationId = current.generationRequest.conversationId,
-                contextLimit = current.generationRequest.snapshot.config.maxContextWindow,
                 config = current.config,
                 state = state,
             ) ?: return StandardCompactContinuationResult(lastModelMessageId, aborted = true)
@@ -489,13 +488,11 @@ class TaskExecutionEngine(
             // may hand off to the ordinary direct Send; every launch/status anomaly stops here.
             val preCompactNeeded = compactController.automaticNeeded(
                 conversationId = conversationId,
-                contextLimit = generationSnapshot.config.maxContextWindow,
                 config = automaticCompactConfig,
             )
             val preCompactLaunch = if (preCompactNeeded) {
                 compactController.startAutomaticStandard(
                     conversationId = conversationId,
-                    contextLimit = generationSnapshot.config.maxContextWindow,
                     config = automaticCompactConfig,
                     state = generationState,
                 ) ?: return Result.Failure("Compact generation did not start")
@@ -617,7 +614,6 @@ class TaskExecutionEngine(
                         if (
                             contextCompactor.automaticNeeded(
                                 conversationId = conversationId,
-                                contextLimit = generationSnapshot.config.maxContextWindow,
                                 config = automaticCompactConfig,
                             )
                         ) {

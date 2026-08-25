@@ -63,9 +63,7 @@ import com.newoether.agora.ui.chat.PdfPageSelectDialog
 import com.newoether.agora.ui.chat.VideoSliceDialog
 import com.newoether.agora.ui.common.LocalAgoraHaptics
 import com.newoether.agora.ui.common.OpenAiServiceTierControlPanel
-import com.newoether.agora.ui.common.ThinkingControlPanel
 import com.newoether.agora.ui.common.openAiServiceTierShortLabel
-import com.newoether.agora.ui.common.thinkingControlShortLabel
 import com.newoether.agora.ui.motion.LocalAgoraMotionPolicy
 import com.newoether.agora.ui.motion.MotionAwareCircularProgressIndicator as CircularProgressIndicator
 import com.newoether.agora.ui.motion.MotionAwareModalBottomSheet as ModalBottomSheet
@@ -88,12 +86,14 @@ internal val CHAT_BOTTOM_BAR_OUTER_RADIUS = 28.dp
 internal val CHAT_BOTTOM_BAR_OUTER_SHAPE = RoundedCornerShape(CHAT_BOTTOM_BAR_OUTER_RADIUS)
 internal val CHAT_DROPDOWN_MENU_SHAPE = RoundedCornerShape(16.dp)
 
+/** The 90% context alarm is the single redundancy source; no other margin is applied. */
+private const val CONTEXT_ALARM_PERCENT = 90
+
 internal fun contextUsageExceedsCompactThreshold(
-    estimatedTokens: Int, tokenBudget: Int, thresholdPercent: Int,
+    estimatedTokens: Int, tokenBudget: Int,
 ): Boolean {
     val normalizedBudget = tokenBudget.coerceAtLeast(1)
-    val normalizedPercent = thresholdPercent.coerceIn(50, 100)
-    val threshold = ((normalizedBudget.toLong() * normalizedPercent + 99L) / 100L)
+    val threshold = ((normalizedBudget.toLong() * CONTEXT_ALARM_PERCENT + 99L) / 100L)
         .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     return tokenBudget > 0 && estimatedTokens > threshold
 }
@@ -118,10 +118,6 @@ fun ChatBottomBar(
     googleSearchEnabled: Boolean = false,
     openAiWebSearchAvailable: Boolean = false,
     openAiWebSearchEnabled: Boolean = false,
-    thinkingEnabled: Boolean = true,
-    thinkingLevel: String = "medium",
-    thinkingBudgetEnabled: Boolean = false,
-    thinkingBudgetTokens: Int = 4096,
     openAiServiceTierAvailable: Boolean = false,
     openAiServiceTierEnabled: Boolean = false,
     openAiServiceTier: String = "auto",
@@ -130,10 +126,6 @@ fun ChatBottomBar(
     onCodeExecutionToggle: (Boolean) -> Unit = {},
     onGoogleSearchToggle: (Boolean) -> Unit = {},
     onOpenAiWebSearchToggle: (Boolean) -> Unit = {},
-    onThinkingToggle: (Boolean) -> Unit = {},
-    onThinkingLevelChange: (String) -> Unit = {},
-    onThinkingBudgetEnabledChange: (Boolean) -> Unit = {},
-    onThinkingBudgetTokensChange: (Int) -> Unit = {},
     onOpenAiServiceTierToggle: (Boolean) -> Unit = {},
     onOpenAiServiceTierChange: (String) -> Unit = {},
     onWebSearchToggle: (Boolean) -> Unit = {},
@@ -166,7 +158,6 @@ fun ChatBottomBar(
     compactDefaultRetainCount: Int = 6,
     contextEstimatedTokens: Int = 0,
     contextTokenBudget: Int = ContextBudget.DEFAULT_TOKENS,
-    contextCompactThresholdPercent: Int = 90,
     canCompact: Boolean = false,
     onCompactClick: () -> Unit = {},
     queuedSends: List<QueuedSend> = emptyList(),
@@ -209,7 +200,6 @@ fun ChatBottomBar(
             }
         }
     }
-    var showThinkingSheet by rememberSaveable { mutableStateOf(false) }
     var showOpenAiServiceTierSheet by rememberSaveable { mutableStateOf(false) }
     val composerOcclusionColor = MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp)
     val composerOcclusionShape = RoundedCornerShape(
@@ -508,7 +498,6 @@ fun ChatBottomBar(
                     contextUsageExceedsCompactThreshold(
                         contextEstimatedTokens,
                         contextTokenBudget,
-                        contextCompactThresholdPercent,
                     )
                 ) {
                     MaterialTheme.colorScheme.error
@@ -618,38 +607,6 @@ fun ChatBottomBar(
                         matchTextFieldWidth = false,
                         shape = CHAT_DROPDOWN_MENU_SHAPE,
                     ) {
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(androidx.compose.ui.res.painterResource(id = com.newoether.agora.R.drawable.neurology_24), null, modifier = Modifier.size(CHAT_DROPDOWN_MENU_ICON_SIZE_DP.dp))
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column {
-                                        Text(stringResource(R.string.thinking))
-                                        Text(
-                                            text = thinkingControlShortLabel(
-                                                thinkingEnabled,
-                                                thinkingLevel,
-                                                thinkingBudgetEnabled,
-                                                thinkingBudgetTokens
-                                            ),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            },
-                            trailingIcon = {
-                                Switch(
-                                    checked = thinkingEnabled,
-                                    onCheckedChange = { onThinkingToggle(it) },
-                                    modifier = Modifier.scale(0.7f)
-                                )
-                            },
-                            onClick = {
-                                activeMenu = null
-                                showThinkingSheet = true
-                            }
-                        )
                         val isGemini = selectedProvider.equals("google", ignoreCase = true) && isModelValid
                         if (isGemini) {
                             DropdownMenuItem(
@@ -827,18 +784,6 @@ fun ChatBottomBar(
     }
 
     ChatBottomBarOverlayHost(
-        showThinkingSheet = showThinkingSheet,
-        onDismissThinkingSheet = { showThinkingSheet = false },
-        thinkingEnabled = thinkingEnabled,
-        thinkingLevel = thinkingLevel,
-        thinkingBudgetEnabled = thinkingBudgetEnabled,
-        thinkingBudgetTokens = thinkingBudgetTokens,
-        onThinkingToggle = onThinkingToggle,
-        onThinkingLevelChange = onThinkingLevelChange,
-        onThinkingBudgetEnabledChange = onThinkingBudgetEnabledChange,
-        onThinkingBudgetTokensChange = onThinkingBudgetTokensChange,
-        selectedModel = selectedModel,
-        customProviders = customProviders,
         showOpenAiServiceTierSheet = showOpenAiServiceTierSheet,
         openAiServiceTierAvailable = openAiServiceTierAvailable,
         onDismissOpenAiServiceTierSheet = { showOpenAiServiceTierSheet = false },

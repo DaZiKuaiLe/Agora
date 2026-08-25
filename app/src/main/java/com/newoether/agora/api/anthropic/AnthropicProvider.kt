@@ -8,6 +8,7 @@ import com.newoether.agora.model.MessageSegment
 import com.newoether.agora.model.Participant
 import com.newoether.agora.model.ThinkingLevels
 import com.newoether.agora.api.util.buildToolCallId
+import com.newoether.agora.api.util.assembleText
 import com.newoether.agora.api.util.prepareMessages
 import com.newoether.agora.api.util.adaptToolRoundsForProvider
 import com.newoether.agora.api.util.RequestFormatException
@@ -633,8 +634,8 @@ class AnthropicProvider(
         // 400 "text content blocks must contain non-whitespace text". Whitespace-only turns
         // are real — a stopped generation that emitted one newline, a tool-only assistant
         // turn, or mergeConsecutiveSameRole joining two blank messages with "\n".
-        if (msg.text.isNotBlank()) {
-            parts.add(AnthropicContentPart(type = "text", text = msg.text))
+        if (msg.assembleText().isNotBlank()) {
+            parts.add(AnthropicContentPart(type = "text", text = msg.assembleText()))
         }
         if (parts.isEmpty()) parts.add(AnthropicContentPart(type = "text", text = "Continue"))
         val role = if (msg.participant == Participant.USER) "user" else "assistant"

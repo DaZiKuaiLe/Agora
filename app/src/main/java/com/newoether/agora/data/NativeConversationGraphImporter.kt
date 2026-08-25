@@ -70,7 +70,7 @@ internal class NativeConversationGraphImporter(
         val sourceRunIdsWereUnique: Boolean,
         val loops: List<LoopEntity>,
         val availableConversationIds: Set<String>,
-        val conversationSettings: Map<String, ConversationSettings>,
+        val conversationSettings: Map<String, ConversationToolState>,
     )
 
     private data class PlannedNativeRunGraph(
@@ -677,7 +677,7 @@ internal class NativeConversationGraphImporter(
         val selectedRunBranchesJson: String? = null,
         val draftText: String = "",
         val draftAttachments: String? = null,
-        val conversationSettings: ConversationSettings? = null,
+        val conversationSettings: ConversationToolState? = null,
         /** v1-v3 compatibility only; never restored across devices. */
         val hasUnreadGeneration: Boolean = false,
     )

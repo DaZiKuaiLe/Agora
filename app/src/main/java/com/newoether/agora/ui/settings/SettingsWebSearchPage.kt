@@ -7,7 +7,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Key
@@ -23,7 +22,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.newoether.agora.R
-import com.newoether.agora.ui.common.PersistedSliderFeedbackGate
+import com.newoether.agora.data.WebSearchPrompts
 import com.newoether.agora.util.noOpBringIntoView
 import com.newoether.agora.viewmodel.ChatViewModel
 import kotlinx.coroutines.delay
@@ -34,18 +33,10 @@ fun SettingsWebSearchPage(viewModel: ChatViewModel, onBack: () -> Unit) {
     val webSearchEnabled by viewModel.settings.webSearchEnabled.collectAsState()
     val webSearchProvider by viewModel.settings.webSearchProvider.collectAsState()
     val webSearchApiKeys by viewModel.settings.webSearchApiKeys.collectAsState()
-    val webSearchNumResults by viewModel.settings.webSearchNumResults.collectAsState()
     val webSearchBaseUrl by viewModel.settings.webSearchBaseUrl.collectAsState()
     var showProviderDialog by remember { mutableStateOf(false) }
     var apiKeyText by remember(webSearchProvider) { mutableStateOf(webSearchApiKeys[webSearchProvider] ?: "") }
     LaunchedEffect(webSearchProvider) { apiKeyText = webSearchApiKeys[webSearchProvider] ?: "" }
-    val resultCountGate = remember {
-        PersistedSliderFeedbackGate(
-            initialPersisted = webSearchNumResults,
-            toDisplay = Int::toFloat,
-        )
-    }
-    LaunchedEffect(webSearchNumResults) { resultCountGate.reconcile(webSearchNumResults) }
 
     // No-op bring-into-view to prevent auto-scrolling on text field focus
     val showDocFab by viewModel.settings.showDocumentationFab.collectAsState()
@@ -76,6 +67,8 @@ fun SettingsWebSearchPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                 supportingContent = {
                                     Text(
                                         when (webSearchProvider) {
+                                            "baidu" -> stringResource(R.string.web_search_baidu)
+                                            "zhipu" -> stringResource(R.string.web_search_zhipu)
                                             "searxng" -> stringResource(R.string.web_search_searxng)
                                             "kagi" -> stringResource(R.string.web_search_kagi)
                                             "serper" -> stringResource(R.string.web_search_serper)
@@ -105,6 +98,8 @@ fun SettingsWebSearchPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                             Text(
                                                 stringResource(
                                                     when (webSearchProvider) {
+                                                        "baidu" -> R.string.web_search_baidu_key
+                                                        "zhipu" -> R.string.web_search_zhipu_key
                                                         "kagi" -> R.string.web_search_kagi_key
                                                         "serper" -> R.string.web_search_serper_key
                                                         "tavily" -> R.string.web_search_tavily_key
@@ -121,6 +116,8 @@ fun SettingsWebSearchPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                                         Text(
                                                             stringResource(
                                                                 when (webSearchProvider) {
+                                                                    "baidu" -> R.string.web_search_baidu_key_hint
+                                                                    "zhipu" -> R.string.web_search_zhipu_key_hint
                                                                     "kagi" -> R.string.web_search_kagi_key_hint
                                                                     "serper" -> R.string.web_search_serper_key_hint
                                                                     "tavily" -> R.string.web_search_tavily_key_hint
@@ -187,67 +184,12 @@ fun SettingsWebSearchPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                 }
                             }
                         }
+
+                        add {
+                            WebSearchPromptPreview(provider = webSearchProvider)
+                        }
                     }
                 })
-
-                if (webSearchEnabled) {
-                    SettingsGroup(title = stringResource(R.string.web_search_advanced), items = buildList {
-                        add {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 16.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.Top
-                                ) {
-                                    Icon(Icons.Default.Tune, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 2.dp))
-                                    Spacer(modifier = Modifier.width(16.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            stringResource(R.string.web_search_num_results),
-                                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Text(
-                                            stringResource(
-                                                R.string.web_search_num_results_desc,
-                                                resultCountGate.displayed.toInt(),
-                                            ),
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.padding(top = 4.dp)
-                                        )
-                                        Slider(
-                                            value = resultCountGate.displayed,
-                                            onValueChange = resultCountGate::updateFromGesture,
-                                            onValueChangeFinished = {
-                                                val committed = resultCountGate.displayed.toInt()
-                                                if (committed == webSearchNumResults) {
-                                                    resultCountGate.settleWithoutWrite(
-                                                        webSearchNumResults,
-                                                        committed.toFloat(),
-                                                    )
-                                                } else {
-                                                    resultCountGate.expectPersisted(
-                                                        committed,
-                                                        committed.toFloat(),
-                                                    )
-                                                    viewModel.settings
-                                                        .setWebSearchNumResults(committed)
-                                                }
-                                            },
-                                            valueRange = 1f..10f,
-                                            steps = 8,
-                                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    })
-                }
             }
 
             if (showDocFab) { Spacer(modifier = Modifier.height(80.dp)) }
@@ -266,6 +208,8 @@ fun SettingsWebSearchPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                         .verticalScroll(rememberScrollState()),
                 ) {
                     val providers = listOf(
+                        "zhipu" to R.string.web_search_zhipu,
+                        "baidu" to R.string.web_search_baidu,
                         "duckduckgo" to R.string.web_search_duckduckgo,
                         "brave" to R.string.web_search_brave,
                         "kagi" to R.string.web_search_kagi,
@@ -280,6 +224,8 @@ fun SettingsWebSearchPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                 Text(
                                     stringResource(
                                         when (key) {
+                                            "baidu" -> R.string.web_search_baidu_desc
+                                            "zhipu" -> R.string.web_search_zhipu_desc
                                             "brave" -> R.string.web_search_brave_desc
                                             "kagi" -> R.string.web_search_kagi_desc
                                             "serper" -> R.string.web_search_serper_desc
@@ -310,5 +256,42 @@ fun SettingsWebSearchPage(viewModel: ChatViewModel, onBack: () -> Unit) {
             },
             confirmButton = { TextButton(onClick = { showProviderDialog = false }) { Text(stringResource(R.string.provider_cancel)) } }
         )
+    }
+}
+
+/**
+ * read-only preview of the exact prompt wording that gets shown to the model for the web_search
+ * tool with the currently selected provider. Because the wording is plain text (numbered bullets +
+ * parameter notes, no markdown), it is rendered as plain text.
+ */
+@Composable
+private fun WebSearchPromptPreview(provider: String) {
+    val text = buildString {
+        append(WebSearchPrompts.DEFAULT_TOOL_DESCRIPTION)
+        WebSearchPrompts.DEFAULT_PROVIDER_CONVENTIONS[provider]?.let {
+            append("\n\n").append(it)
+        }
+        WebSearchPrompts.DEFAULT_PROVIDER_PARAMS[provider]?.forEach { (key, desc) ->
+            append("\n\n").append("- $key：$desc")
+        }
+    }
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                "发送给模型的搜索提示词预览",
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
     }
 }

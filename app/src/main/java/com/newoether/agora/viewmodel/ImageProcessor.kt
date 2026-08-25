@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
+import kotlin.math.roundToInt
 
 data class VideoSliceConfig(
     val intervalMicros: Long,
@@ -16,7 +17,8 @@ class ImageProcessor(
 ) {
     suspend fun processImagesAndVideos(
         uris: List<String>,
-        sliceConfigs: Map<String, VideoSliceConfig> = emptyMap()
+        sliceConfigs: Map<String, VideoSliceConfig> = emptyMap(),
+        maxDimension: Int = 512,
     ): List<String> = withContext(Dispatchers.IO) {
         uris.flatMap { uriString ->
             try {
@@ -70,22 +72,41 @@ class ImageProcessor(
                         }
 
                         if (options.outWidth > 0 && options.outHeight > 0) {
+                            // Strict ceiling: downsample by powers of two so the decoded bitmap's
+                            // long edge lands in [maxDim, 2*maxDim), then precisely scale to maxDim.
+                            // This guarantees the result is <= maxDim (no off-by-one from the
+                            // decoder's ceil) and stays close to maxDim (no coarse power-of-two gap).
+                            val maxDim = maxDimension.coerceAtLeast(1)
+                            val longEdge = maxOf(options.outWidth, options.outHeight)
                             var scale = 1
-                            while (options.outWidth / scale / 2 >= 1024 && options.outHeight / scale / 2 >= 1024) {
+                            while (longEdge / (scale * 2) >= maxDim) {
                                 scale *= 2
                             }
 
                             val decodeOptions = android.graphics.BitmapFactory.Options().apply { inSampleSize = scale }
-                            val bitmap = openStream(uriString)?.use { stream ->
+                            val decoded = openStream(uriString)?.use { stream ->
                                 android.graphics.BitmapFactory.decodeStream(stream, null, decodeOptions)
                             }
 
-                            if (bitmap != null) {
+                            // A decoded long edge in [maxDim, 2*maxDim) means createScaledBitmap only
+                            // ever shrinks, never upscales, and the ratio stays in (0.5, 1].
+                            val finalBitmap = if (decoded != null && maxOf(decoded.width, decoded.height) > maxDim) {
+                                val decodedLong = maxOf(decoded.width, decoded.height).toFloat()
+                                val ratio = maxDim / decodedLong
+                                val nw = (decoded.width * ratio).roundToInt().coerceAtLeast(1)
+                                val nh = (decoded.height * ratio).roundToInt().coerceAtLeast(1)
+                                android.graphics.Bitmap.createScaledBitmap(decoded, nw, nh, true)
+                                    .also { decoded.recycle() }
+                            } else {
+                                decoded
+                            }
+
+                            if (finalBitmap != null) {
                                 val file = File(app.filesDir, "img_${UUID.randomUUID()}.jpg")
                                 file.outputStream().use { out ->
-                                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
+                                    finalBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
                                 }
-                                bitmap.recycle()
+                                finalBitmap.recycle()
                                 listOf(file.absolutePath)
                             } else emptyList()
                         } else emptyList()

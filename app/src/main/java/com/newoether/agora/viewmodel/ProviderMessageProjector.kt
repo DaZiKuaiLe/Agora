@@ -72,6 +72,26 @@ internal fun projectProviderMessages(
         }?.joinToString("").orEmpty()
         val hasTranscription = includeStoredTranscriptions &&
             attachmentMeta?.items?.any { !it.transcription.isNullOrBlank() } == true
+        val imageAssetsText = run {
+            val imageItems = attachmentMeta?.items?.filter { it.type == "image" } ?: emptyList()
+            val originalAssets = imageItems.withIndex().mapNotNull { (index, item) ->
+                item.originalUri
+                    ?.removePrefix("file://")
+                    ?.takeIf { it.startsWith("/") }
+                    ?.let { "image[$index] = $it" }
+            }
+            if (originalAssets.isNotEmpty()) {
+                "\n\n[本地图片 - 可用 upload_file_to_server 上传到远程服务器后，再用 execute_shell_command 操作]\n" +
+                    originalAssets.joinToString("\n")
+            } else if (entity.images.isNotEmpty()) {
+                // Fallback when no usable originalUri surfaces (content URI / missing meta):
+                // hand the model the ready paths rather than nothing.
+                val assets = entity.images.withIndex().joinToString("\n") { (index, path) ->
+                    "image[$index] = $path"
+                }
+                "\n\n[本地图片 - 可用 upload_file_to_server 上传到远程服务器后，再用 execute_shell_command 操作]\n$assets"
+            } else null
+        }
         ChatMessage(
             id = entity.id,
             parentId = entity.parentId,
@@ -96,6 +116,7 @@ internal fun projectProviderMessages(
             segments = segments,
             toolCall = toolCall,
             attachmentMeta = attachmentMeta,
+            imageAssetsText = imageAssetsText,
             runId = entity.runId,
             runSequence = entity.runSequence,
             consumedAtPass = entity.consumedAtPass,

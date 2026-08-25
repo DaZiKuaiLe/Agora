@@ -36,6 +36,31 @@ data class GenerationConfig(
     val presencePenalty: Float? = null
 )
 
+/**
+ * Fully-resolved generation parameters for one conversation + model, ready to feed
+ * [GenerationConfig]. Sampling, thinking and context bounds are resolved from the per-model
+ * settings (falling back to global defaults); tool switches are resolved from the session-level
+ * [com.newoether.agora.data.ConversationToolState] (falling back to global gates). There is no
+ * session-level override for sampling/thinking/context.
+ */
+data class EffectiveGenerationSettings(
+    val maxContextWindow: Int,
+    val codeExecutionEnabled: Boolean,
+    val googleSearchEnabled: Boolean,
+    val openAiWebSearchEnabled: Boolean,
+    val webSearchEnabled: Boolean,
+    val shellEnabled: Boolean,
+    val thinkingEnabled: Boolean,
+    val thinkingLevel: String,
+    val thinkingBudgetEnabled: Boolean,
+    val thinkingBudgetTokens: Int,
+    val temperature: Float?,
+    val maxTokens: Int?,
+    val topP: Float?,
+    val frequencyPenalty: Float?,
+    val presencePenalty: Float?,
+)
+
 data class GenerationContext(
     val conversationId: String? = null,
     val accessSavedMemories: Boolean = true,
@@ -52,8 +77,7 @@ data class GenerationContext(
     val searchContextWindow: Int = 8,
     val webSearchEnabled: Boolean = false,
     val webSearchApiKeys: Map<String, String> = emptyMap(),
-    val webSearchProvider: String = "duckduckgo",
-    val webSearchNumResults: Int = 5,
+    val webSearchProvider: String = "zhipu",
     val webSearchBaseUrl: String = "",
     val imageGenEnabled: Boolean = false,
     val imageGenApiKey: String = "",
@@ -83,7 +107,8 @@ data class GenerationContext(
 /** Frozen automatic-Compact policy and provider access captured with one generation. */
 internal data class AutomaticCompactConfig(
     val enabled: Boolean,
-    val thresholdPercent: Int,
+    /** Absolute token count at which automatic compaction fires. */
+    val compactThreshold: Int,
     val request: CompactRequest,
     val providerName: String,
     val apiKey: String,

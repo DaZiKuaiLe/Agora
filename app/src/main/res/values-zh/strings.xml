@@ -240,6 +240,10 @@
     <string name="image_gen_size">默认尺寸</string>
     <string name="image_gen_size_hint">1024x1024</string>
     <string name="image_gen_show_all">显示全部模型</string>
+    <string name="settings_image_upload">图像上传</string>
+    <string name="settings_image_upload_desc">控制上传图片在发送前的缩放</string>
+    <string name="image_upload_max_dimension">分辨率上限</string>
+    <string name="image_upload_max_dimension_desc">上传图片的最长边。越低越省 token，但细节越少。</string>
     <string name="tool_generate_image">生成图片</string>
     <string name="tool_generating_image">正在生成图片…</string>
     <string name="tool_generated_image">已生成图片</string>
@@ -338,6 +342,8 @@
     <string name="context_window">上下文窗口</string>
     <string name="context_window_desc">单次生成可使用的最大上下文</string>
     <string name="context_window_default">默认上下文窗口</string>
+    <string name="context_limit">上下文上限</string>
+    <string name="compact_threshold">压缩阈值</string>
     <string name="context_retain">保留最近 %1$d 条消息</string>
     <string name="context_token_budget_value">约 %1$s tokens</string>
     <string name="context_visualize">可视化上下文滚动</string>
@@ -399,6 +405,8 @@
     <string name="web_search_tavily">Tavily</string>
     <string name="web_search_searxng">SearXNG</string>
     <string name="web_search_duckduckgo">DuckDuckGo</string>
+    <string name="web_search_baidu">百度搜索</string>
+    <string name="web_search_baidu_desc">百度千帆 AI 搜索。中文覆盖好、时效性强。</string>
     <string name="web_search_brave_desc">注重隐私的搜索 API。提供免费套餐。</string>
     <string name="web_search_kagi_desc">支持个性化结果的高级搜索 API，按量付费。</string>
     <string name="web_search_serper_desc">快速 Google 搜索 API。每月 2,500 次免费查询。</string>
@@ -414,12 +422,16 @@
     <string name="web_search_serper_key_hint">来自 serper.dev 的 API 密钥</string>
     <string name="web_search_tavily_key">Tavily API 密钥</string>
     <string name="web_search_tavily_key_hint">来自 tavily.com 的 API 密钥</string>
-    <string name="web_search_num_results">最大结果数</string>
-    <string name="web_search_num_results_desc">获取的结果数量：%1$d（1-10）</string>
+    <string name="web_search_baidu_key">百度千帆 API 密钥</string>
+    <string name="web_search_baidu_key_hint">来自 qianfan.baidubce.com（V2 控制台）的 API 密钥</string>
+
+    <string name="web_search_zhipu">智谱 AI 搜索</string>
+    <string name="web_search_zhipu_desc">智谱 AI 搜索。多引擎（搜狗/夸克），长尾与小众内容召回极强。</string>
+    <string name="web_search_zhipu_key">智谱 API 密钥</string>
+    <string name="web_search_zhipu_key_hint">来自 open.bigmodel.cn 的 API 密钥</string>
     <string name="web_search_searxng_url">SearXNG 基础 URL</string>
     <string name="web_search_searxng_url_hint">https://searx.be</string>
     <string name="web_search_searxng_fallback_desc">公共实例常有频率限制，建议自行搭建以获得稳定体验。</string>
-    <string name="web_search_advanced">高级</string>
 
     <!-- Settings - Shell Page -->
     <string name="shell_title">终端</string>

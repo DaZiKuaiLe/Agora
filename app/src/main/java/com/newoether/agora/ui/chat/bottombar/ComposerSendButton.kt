@@ -23,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import com.newoether.agora.R
@@ -64,6 +65,7 @@ internal fun ComposerSendButton(
 ) {
     val haptics = LocalAgoraHaptics.current
     val submitScope = rememberCoroutineScope()
+    val keyboardController = LocalSoftwareKeyboardController.current
     var isSubmitting by remember { mutableStateOf(false) }
     // Pending send: wait for processing to finish, then auto-send
     val anyProcessing = composer.processingStates.isNotEmpty()
@@ -75,6 +77,9 @@ internal fun ComposerSendButton(
         val submittedAttachmentIds = submittedAttachments.map { it.localId }
         isSubmitting = true
         try {
+            // Dismiss the IME immediately on the send tap so the gesture feels responsive;
+            // the actual handoff may take time (attachment processing) before the send lands.
+            keyboardController?.hide()
             onSendMessage(
                 submittedText,
                 submittedAttachments,

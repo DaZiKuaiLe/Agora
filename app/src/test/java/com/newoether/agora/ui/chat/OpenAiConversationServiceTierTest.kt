@@ -1,6 +1,5 @@
 package com.newoether.agora.ui.chat
 
-import com.newoether.agora.data.ConversationSettings
 import com.newoether.agora.data.CustomEndpointProtocol
 import com.newoether.agora.data.CustomProviderConfig
 import com.newoether.agora.model.OpenAiServiceTiers
@@ -12,11 +11,10 @@ import org.junit.Test
 
 class OpenAiConversationServiceTierTest {
     @Test
-    fun conversationOverrideFallsBackToGlobalAndNormalizesTier() {
+    fun globalTierIsNormalizedAndEnabledTracksGlobalFlag() {
         val inherited = resolveOpenAiConversationServiceTier(
             globalEnabled = true,
             globalTier = OpenAiServiceTiers.FLEX,
-            conversationOverride = ConversationSettings(),
             providerName = Constants.PROVIDER_OPENAI,
             builtInOpenAiResponsesEnabled = true,
             customProviders = emptyList(),
@@ -25,19 +23,15 @@ class OpenAiConversationServiceTierTest {
         assertTrue(inherited.enabled)
         assertEquals(OpenAiServiceTiers.FLEX, inherited.tier)
 
-        val overridden = resolveOpenAiConversationServiceTier(
-            globalEnabled = true,
-            globalTier = OpenAiServiceTiers.FLEX,
-            conversationOverride = ConversationSettings(
-                openAiServiceTierEnabled = false,
-                openAiServiceTier = OpenAiServiceTiers.FAST,
-            ),
+        val disabled = resolveOpenAiConversationServiceTier(
+            globalEnabled = false,
+            globalTier = OpenAiServiceTiers.FAST,
             providerName = Constants.PROVIDER_OPENAI,
             builtInOpenAiResponsesEnabled = true,
             customProviders = emptyList(),
         )
-        assertFalse(overridden.enabled)
-        assertEquals(OpenAiServiceTiers.FAST, overridden.tier)
+        assertFalse(disabled.enabled)
+        assertEquals(OpenAiServiceTiers.FAST, disabled.tier)
     }
 
     @Test
@@ -56,22 +50,20 @@ class OpenAiConversationServiceTierTest {
 
         assertTrue(
             resolveOpenAiConversationServiceTier(
-                false,
-                OpenAiServiceTiers.AUTO,
-                null,
-                "OpenAI relay",
-                false,
-                customProviders,
+                globalEnabled = false,
+                globalTier = OpenAiServiceTiers.AUTO,
+                providerName = "OpenAI relay",
+                builtInOpenAiResponsesEnabled = false,
+                customProviders = customProviders,
             ).available,
         )
         assertFalse(
             resolveOpenAiConversationServiceTier(
-                false,
-                OpenAiServiceTiers.AUTO,
-                null,
-                "Anthropic relay",
-                false,
-                customProviders,
+                globalEnabled = false,
+                globalTier = OpenAiServiceTiers.AUTO,
+                providerName = "Anthropic relay",
+                builtInOpenAiResponsesEnabled = false,
+                customProviders = customProviders,
             ).available,
         )
     }
@@ -82,7 +74,6 @@ class OpenAiConversationServiceTierTest {
             resolveOpenAiConversationServiceTier(
                 globalEnabled = true,
                 globalTier = OpenAiServiceTiers.FAST,
-                conversationOverride = null,
                 providerName = Constants.PROVIDER_OPENAI,
                 builtInOpenAiResponsesEnabled = false,
                 customProviders = emptyList(),
@@ -92,7 +83,6 @@ class OpenAiConversationServiceTierTest {
             resolveOpenAiConversationServiceTier(
                 globalEnabled = true,
                 globalTier = OpenAiServiceTiers.FAST,
-                conversationOverride = null,
                 providerName = "Relay without Responses",
                 builtInOpenAiResponsesEnabled = true,
                 customProviders = listOf(

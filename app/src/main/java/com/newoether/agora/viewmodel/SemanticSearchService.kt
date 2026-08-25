@@ -31,7 +31,6 @@ internal class SemanticSearchService(
             webSearchEnabled = settings.webSearchEnabled.value,
             webSearchApiKeys = settings.webSearchApiKeys.value,
             webSearchProvider = settings.webSearchProvider.value,
-            webSearchNumResults = settings.webSearchNumResults.value,
             webSearchBaseUrl = settings.webSearchBaseUrl.value,
         )
         return search(query, limit, context)

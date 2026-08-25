@@ -28,7 +28,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.newoether.agora.R
-import com.newoether.agora.data.ConversationSettings
+import com.newoether.agora.data.ModelGenerationSettings
 import com.newoether.agora.ui.components.clearFocusOnTap
 import com.newoether.agora.viewmodel.ChatViewModel
 
@@ -246,51 +246,30 @@ internal fun ChatSystemPromptDialog(
 }
 
 /**
- * Advanced (per-conversation generation params) dialog wrapper: resolves the active
- * conversation's overrides + global defaults, then defers to [AdvancedSettingsDialog].
+ * Advanced (per-model generation params) dialog wrapper: resolves the active model's
+ * canonical id and its per-model settings, then defers to [AdvancedSettingsDialog].
  */
 @Composable
 internal fun ChatAdvancedSettingsDialog(
     viewModel: ChatViewModel,
     onDismiss: () -> Unit
 ) {
-    val currentConversationId by viewModel.currentConversationId.collectAsState()
-    val conversationSettings by viewModel.settings.conversationSettings.collectAsState()
-    val maxContextWindow by viewModel.settings.maxContextWindow.collectAsState()
-    val defaultTemperature by viewModel.settings.defaultTemperature.collectAsState()
-    val defaultMaxTokens by viewModel.settings.defaultMaxTokens.collectAsState()
-    val defaultTopP by viewModel.settings.defaultTopP.collectAsState()
-    val defaultFrequencyPenalty by viewModel.settings.defaultFrequencyPenalty.collectAsState()
-    val defaultPresencePenalty by viewModel.settings.defaultPresencePenalty.collectAsState()
+    val activeModel by viewModel.currentActiveModel.collectAsState()
+    val modelGenerationSettings by viewModel.settings.modelGenerationSettings.collectAsState()
 
-    val currentId = currentConversationId
-    val overrides = if (currentId != null) conversationSettings[currentId] ?: ConversationSettings()
-        else ConversationSettings()
-    val defaults = ConversationSettings(
-        contextWindow = maxContextWindow,
-        temperature = defaultTemperature,
-        maxTokens = defaultMaxTokens,
-        topP = defaultTopP,
-        frequencyPenalty = defaultFrequencyPenalty,
-        presencePenalty = defaultPresencePenalty
-    )
+    val canonicalModelId = viewModel.canonicalModelIdFor(activeModel)
+    val providerName = viewModel.getProviderForModel(canonicalModelId)
+    val current = modelGenerationSettings[canonicalModelId] ?: ModelGenerationSettings()
+
     AdvancedSettingsDialog(
-        overrides = overrides,
-        globalDefaults = defaults,
+        current = current,
+        providerName = providerName,
         onSave = { settings ->
-            if (currentId != null) {
-                viewModel.settings.setConversationSettings(currentId, settings)
-            } else {
-                viewModel.setPendingConversationSettings(settings)
-            }
+            viewModel.settings.setModelGenerationSetting(canonicalModelId, settings)
             onDismiss()
         },
-        onResetToDefaults = {
-            if (currentId != null) {
-                viewModel.settings.setConversationSettings(currentId, null)
-            } else {
-                viewModel.setPendingConversationSettings(null)
-            }
+        onReset = {
+            viewModel.settings.setModelGenerationSetting(canonicalModelId, null)
         },
         onDismiss = onDismiss
     )

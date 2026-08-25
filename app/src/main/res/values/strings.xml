@@ -269,6 +269,10 @@
     <string name="image_gen_size">Default Size</string>
     <string name="image_gen_size_hint">1024x1024</string>
     <string name="image_gen_show_all">Show all models</string>
+    <string name="settings_image_upload">Intelligent Upload</string>
+    <string name="settings_image_upload_desc">Control how uploaded images are downscaled before sending</string>
+    <string name="image_upload_max_dimension">Resolution Limit</string>
+    <string name="image_upload_max_dimension_desc">Longest edge of an uploaded image. Lower = fewer tokens, less detail.</string>
     <string name="tool_generate_image">Generate Image</string>
     <string name="tool_generating_image">Generating image…</string>
     <string name="tool_generated_image">Generated image</string>
@@ -367,6 +371,8 @@
     <string name="context_window">Context Window</string>
     <string name="context_window_desc">Maximum context available to a generation</string>
     <string name="context_window_default">Default Context Window</string>
+    <string name="context_limit">Context Limit</string>
+    <string name="compact_threshold">Compaction Threshold</string>
     <string name="context_retain">Retain %1$d recent messages</string>
     <string name="context_token_budget_value">%1$s estimated tokens</string>
     <string name="context_visualize">Visualize Context Roll-Out</string>
@@ -438,6 +444,10 @@
     <string name="web_search_tavily">Tavily</string>
     <string name="web_search_searxng">SearXNG</string>
     <string name="web_search_duckduckgo">DuckDuckGo</string>
+    <string name="web_search_baidu">Baidu Search</string>
+    <string name="web_search_baidu_desc">Baidu Qianfan AI Search. Reliable Chinese coverage and timely results.</string>
+    <string name="web_search_zhipu">智谱 AI 搜索</string>
+    <string name="web_search_zhipu_desc">Zhipu Web Search. Multi-engine (Sogou/Quark) with strong long-tail recall.</string>
     <string name="web_search_brave_desc">Privacy-focused search API. Free tier available.</string>
     <string name="web_search_kagi_desc">Premium search API with personalized results. Pay per use.</string>
     <string name="web_search_serper_desc">Fast Google Search API. 2,500 free queries/month.</string>
@@ -453,10 +463,11 @@
     <string name="web_search_serper_key_hint">API key from serper.dev</string>
     <string name="web_search_tavily_key">Tavily API Key</string>
     <string name="web_search_tavily_key_hint">API key from tavily.com</string>
-    <string name="web_search_num_results">Max Results</string>
-    <string name="web_search_num_results_desc">Number of results to fetch: %1$d (1-10)</string>
+    <string name="web_search_baidu_key">Baidu Qianfan API Key</string>
+    <string name="web_search_baidu_key_hint">API key from qianfan.baidubce.com (V2 console)</string>
+    <string name="web_search_zhipu_key">Zhipu API Key</string>
+    <string name="web_search_zhipu_key_hint">API key from open.bigmodel.cn</string>
     <string name="web_search_searxng_fallback_desc">Public instances are often rate-limited. Self-hosting is recommended for reliable use.</string>
-    <string name="web_search_advanced">Advanced</string>
     <string name="web_search_searxng_url">SearXNG Base URL</string>
     <string name="web_search_searxng_url_hint">https://searx.be</string>
 

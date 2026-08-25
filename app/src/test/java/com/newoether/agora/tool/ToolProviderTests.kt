@@ -19,6 +19,24 @@ class WebSearchToolProviderTest {
     }
 
     @Test
+    fun definitions_exposesOnlyCurrentProviderParams() {
+        val zhipuDefs = provider.definitions(GenerationContext(webSearchEnabled = true, webSearchProvider = "zhipu"))
+        val zhipuKeys = zhipuDefs[0].function.parameters.properties.keys
+        assertEquals(setOf("query", "num_results", "search_engine", "search_recency_filter", "search_domain_filter", "content_size"), zhipuKeys)
+
+        val baiduDefs = provider.definitions(GenerationContext(webSearchEnabled = true, webSearchProvider = "baidu"))
+        val baiduKeys = baiduDefs[0].function.parameters.properties.keys
+        assertEquals(setOf("query", "num_results", "recency_filter", "include_video", "include_image", "site_filter"), baiduKeys)
+    }
+
+    @Test
+    fun definitions_toolDescriptionIncludesProviderConvention() {
+        val defs = provider.definitions(GenerationContext(webSearchEnabled = true, webSearchProvider = "zhipu"))
+        val description = defs[0].function.description
+        assertTrue("zhipu convention must be appended to tool description", "search_domain_filter" in description || "search_engine" in description)
+    }
+
+    @Test
     fun definitions_whenDisabled_returnsEmpty() {
         assertTrue(provider.definitions(disabledCtx).isEmpty())
     }
@@ -80,7 +98,7 @@ class ShellToolProviderTest {
             )
         )
         val defs = provider.definitions(ctx)
-        assertEquals(12, defs.size)
+        assertEquals(14, defs.size)
         val names = defs.map { it.function.name }.toSet()
         assertEquals(
             setOf(
@@ -96,6 +114,8 @@ class ShellToolProviderTest {
                 "file_glob",
                 "file_grep",
                 "view_image",
+                "upload_file_to_server",
+                "download_file",
             ),
             names,
         )
@@ -176,6 +196,8 @@ class ShellToolProviderTest {
         assertTrue(provider.handles("file_glob"))
         assertTrue(provider.handles("file_grep"))
         assertTrue(provider.handles("view_image"))
+        assertTrue(provider.handles("upload_file_to_server"))
+        assertTrue(provider.handles("download_file"))
         assertFalse(provider.handles("unknown"))
     }
 }

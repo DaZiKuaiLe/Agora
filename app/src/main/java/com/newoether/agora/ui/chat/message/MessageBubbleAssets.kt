@@ -48,9 +48,12 @@ import com.newoether.agora.ui.theme.ChatType
 import com.mikepenz.markdown.compose.LocalMarkdownColors
 import com.mikepenz.markdown.compose.LocalMarkdownDimens
 import com.mikepenz.markdown.compose.LocalMarkdownPadding
+import com.mikepenz.markdown.compose.LocalMarkdownTypography
+import androidx.compose.runtime.CompositionLocalProvider
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.markdownPadding
+import com.mikepenz.markdown.model.markdownDimens
 import com.mikepenz.markdown.model.MarkdownColors
 import com.mikepenz.markdown.model.MarkdownPadding
 import com.mikepenz.markdown.model.MarkdownTypography
@@ -451,25 +454,37 @@ internal fun ChatMarkdownCodeBlock(
     modifier: Modifier = Modifier,
 ) {
     val assets = rememberChatMarkdownAssets(MaterialTheme.colorScheme.onSurface)
-    MarkdownCodeBackground(
-        color = assets.renderContext.colors.codeBackground,
-        shape = RoundedCornerShape(LocalMarkdownDimens.current.codeBackgroundCornerSize),
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        showHeader = true,
-        language = null,
-        code = code,
+    // ChatMarkdownCodeBlock may be used outised a Markdown() container (e.g. in an AlertDialog),
+    // where the LocalMarkdown* CompositionLocals are not provided. Wrap with defaults so the
+    // underlying MarkdownCodeBackground/MarkdownCodeTopBar (which read LocalMarkdownColors,
+    // LocalMarkdownPadding, LocalMarkdownDimens) don't crash.
+    val dimens = markdownDimens()
+    CompositionLocalProvider(
+        LocalMarkdownColors provides assets.renderContext.colors,
+        LocalMarkdownPadding provides assets.renderContext.padding,
+        LocalMarkdownDimens provides dimens,
+        LocalMarkdownTypography provides assets.renderContext.typography,
     ) {
-        MarkdownBasicText(
-            text = AnnotatedString(code),
-            style = assets.renderContext.typography.code.copy(
-                color = MaterialTheme.colorScheme.onSurface,
-            ),
-            modifier = Modifier
-                .horizontalScroll(rememberScrollState())
-                .padding(assets.renderContext.padding.codeBlock),
-        )
+        MarkdownCodeBackground(
+            color = assets.renderContext.colors.codeBackground,
+            shape = RoundedCornerShape(dimens.codeBackgroundCornerSize),
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            showHeader = true,
+            language = null,
+            code = code,
+        ) {
+            MarkdownBasicText(
+                text = AnnotatedString(code),
+                style = assets.renderContext.typography.code.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                ),
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(assets.renderContext.padding.codeBlock),
+            )
+        }
     }
 }
 

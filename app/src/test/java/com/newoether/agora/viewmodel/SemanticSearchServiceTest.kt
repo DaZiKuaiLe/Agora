@@ -24,7 +24,6 @@ class SemanticSearchServiceTest {
         every { settings.webSearchEnabled } returns state(true)
         every { settings.webSearchApiKeys } returns state(mapOf("provider" to "key"))
         every { settings.webSearchProvider } returns state("provider")
-        every { settings.webSearchNumResults } returns state(13)
         every { settings.webSearchBaseUrl } returns state("https://search")
         val embedding = EmbeddingModelConfig(
             id = "embedding",
@@ -66,7 +65,6 @@ class SemanticSearchServiceTest {
                 webSearchEnabled = true,
                 webSearchApiKeys = mapOf("provider" to "key"),
                 webSearchProvider = "provider",
-                webSearchNumResults = 13,
                 webSearchBaseUrl = "https://search",
             ),
             capturedContext,

@@ -28,7 +28,7 @@ class OpenAiNativeSearchWiringTest {
         }
         listOf(
             "responsesApiEnabled = isResponsesApiEnabledForProvider(",
-            "effectiveSettings.openAiWebSearchEnabled == true && responsesApiEnabled",
+            "effectiveSettings.openAiWebSearchEnabled && responsesApiEnabled",
         ).forEach { wiring ->
             assertTrue("generation request must wire $wiring", wiring in requestBuilder)
         }
@@ -66,26 +66,18 @@ class OpenAiNativeSearchWiringTest {
         ).readText()
 
         assertTrue(
-            "ChatApp must collect the compact threshold",
-            "settings.contextCompactThresholdPercent.collectAsState()" in chatApp,
-        )
-        assertTrue(
-            "ChatApp must pass the compact threshold",
-            "contextCompactThresholdPercent = compactThresholdPercent" in chatApp,
-        )
-        assertTrue(
-            "automatic Compact must freeze the threshold",
-            "thresholdPercent = settings.contextCompactThresholdPercent.value" in requestBuilder,
+            "automatic Compact must freeze the absolute threshold",
+            "compactThreshold = compactThreshold" in requestBuilder,
         )
         assertTrue(
             "automatic Compact must freeze the selected provider transport",
             "responsesApiEnabled = isResponsesApiEnabledForProvider(" in requestBuilder,
         )
-        assertTrue("AutomaticCompactConfig must carry the threshold", "val thresholdPercent" in contracts)
+        assertTrue("AutomaticCompactConfig must carry the absolute threshold", "val compactThreshold" in contracts)
         assertTrue("AutomaticCompactConfig must carry Responses API", "val responsesApiEnabled" in contracts)
         assertTrue(
-            "ContextCompactor must apply the configured threshold",
-            "automaticCompactTokenThreshold(contextLimit, config.thresholdPercent)" in compactor,
+            "ContextCompactor must apply the absolute threshold",
+            "config.compactThreshold" in compactor,
         )
         assertTrue(
             "Compact must delegate admission to the ordinary continuation launcher",
@@ -130,12 +122,12 @@ class OpenAiNativeSearchWiringTest {
             "onOpenAiServiceTierChange =",
         ).forEach { wiring -> assertTrue("ChatApp must wire $wiring", wiring in chatApp) }
         assertTrue(
-            "service-tier toggle must persist a conversation override",
-            "it.copy(openAiServiceTierEnabled = enabled)" in serviceTier,
+            "service-tier toggle must persist the global setting",
+            "viewModel.settings.setOpenAiServiceTierEnabled(enabled)" in serviceTier,
         )
         assertTrue(
-            "service-tier selection must persist a normalized conversation override",
-            "it.copy(openAiServiceTier = OpenAiServiceTiers.normalize(tier))" in serviceTier,
+            "service-tier selection must persist the normalized global setting",
+            "viewModel.settings.setOpenAiServiceTier(tier)" in serviceTier,
         )
         assertFalse("generic provider set must exclude OpenAI", "\"openai\"" in settingsContracts)
         assertFalse(
@@ -147,8 +139,10 @@ class OpenAiNativeSearchWiringTest {
             "web_search_openai" in settingsPage,
         )
         assertTrue(
-            "DuckDuckGo must be the first Web Search provider",
+            "Zhipu must be the first Web Search provider",
             "val providers = listOf(\n" +
+                "                        \"zhipu\" to R.string.web_search_zhipu,\n" +
+                "                        \"baidu\" to R.string.web_search_baidu,\n" +
                 "                        \"duckduckgo\" to R.string.web_search_duckduckgo,\n" +
                 "                        \"brave\" to R.string.web_search_brave," in settingsPage,
         )

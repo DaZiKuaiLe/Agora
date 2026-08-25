@@ -1,13 +1,13 @@
 package com.newoether.agora.data.repository
 
-import com.newoether.agora.data.ConversationSettings
+import com.newoether.agora.data.ConversationToolState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 internal data class ConversationSettingsWrite(
     val conversationId: String,
-    val settings: ConversationSettings?,
+    val settings: ConversationToolState?,
     val version: Long,
 )
 
@@ -17,26 +17,26 @@ internal data class ConversationSettingsWrite(
  */
 internal class ConversationSettingsState {
     private val lock = Any()
-    private val mutableState = MutableStateFlow<Map<String, ConversationSettings>>(emptyMap())
+    private val mutableState = MutableStateFlow<Map<String, ConversationToolState>>(emptyMap())
     private val pendingVersions = mutableMapOf<String, Long>()
     private var nextVersion = 0L
 
-    val state: StateFlow<Map<String, ConversationSettings>> = mutableState.asStateFlow()
+    val state: StateFlow<Map<String, ConversationToolState>> = mutableState.asStateFlow()
 
     fun set(
         conversationId: String,
-        settings: ConversationSettings?,
+        settings: ConversationToolState?,
     ): ConversationSettingsWrite = synchronized(lock) {
         createWrite(conversationId, settings)
     }
 
     fun update(
         conversationId: String,
-        transform: (ConversationSettings) -> ConversationSettings,
+        transform: (ConversationToolState) -> ConversationToolState,
     ): ConversationSettingsWrite = synchronized(lock) {
         createWrite(
             conversationId = conversationId,
-            settings = transform(mutableState.value[conversationId] ?: ConversationSettings()),
+            settings = transform(mutableState.value[conversationId] ?: ConversationToolState()),
         )
     }
 
@@ -44,7 +44,7 @@ internal class ConversationSettingsState {
         pendingVersions[write.conversationId] == write.version
     }
 
-    fun acceptPersisted(settings: Map<String, ConversationSettings>) {
+    fun acceptPersisted(settings: Map<String, ConversationToolState>) {
         synchronized(lock) {
             mutableState.value = mergePending(settings)
         }
@@ -52,7 +52,7 @@ internal class ConversationSettingsState {
 
     fun complete(
         write: ConversationSettingsWrite,
-        persisted: Map<String, ConversationSettings>,
+        persisted: Map<String, ConversationToolState>,
     ) {
         synchronized(lock) {
             if (pendingVersions[write.conversationId] == write.version) {
@@ -64,7 +64,7 @@ internal class ConversationSettingsState {
 
     fun fail(
         write: ConversationSettingsWrite,
-        persisted: Map<String, ConversationSettings>?,
+        persisted: Map<String, ConversationToolState>?,
     ) {
         synchronized(lock) {
             if (pendingVersions[write.conversationId] == write.version) {
@@ -78,9 +78,9 @@ internal class ConversationSettingsState {
 
     private fun createWrite(
         conversationId: String,
-        settings: ConversationSettings?,
+        settings: ConversationToolState?,
     ): ConversationSettingsWrite {
-        val normalized = settings?.takeUnless(ConversationSettings::isAllNull)
+        val normalized = settings?.takeUnless(ConversationToolState::isAllNull)
         val updated = mutableState.value.toMutableMap()
         if (normalized == null) {
             updated.remove(conversationId)
@@ -94,8 +94,8 @@ internal class ConversationSettingsState {
     }
 
     private fun mergePending(
-        persisted: Map<String, ConversationSettings>,
-    ): Map<String, ConversationSettings> {
+        persisted: Map<String, ConversationToolState>,
+    ): Map<String, ConversationToolState> {
         if (pendingVersions.isEmpty()) return persisted
         val merged = persisted.toMutableMap()
         pendingVersions.keys.forEach { conversationId ->

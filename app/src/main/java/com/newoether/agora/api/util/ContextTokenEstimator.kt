@@ -18,8 +18,10 @@ object ContextTokenEstimator {
     private const val MESSAGE_OVERHEAD = 8
     private const val IMAGE_ESTIMATE = 1_024
     private const val TOOL_CALL_OVERHEAD = 16
-    private const val SAFETY_NUMERATOR = 11L
-    private const val SAFETY_DENOMINATOR = 10L
+    // Redundancy is centralized in the 90% progress-bar alarm; the estimator itself applies no
+    // margin so an estimate is the raw expected cost (no 1.1x inflation).
+    private const val SAFETY_NUMERATOR = 1L
+    private const val SAFETY_DENOMINATOR = 1L
 
     fun estimate(messages: List<ChatMessage>): Int {
         val raw = messages.fold(0L) { total, message ->
@@ -63,7 +65,7 @@ object ContextTokenEstimator {
         // Provider adapters serialize tool protocol payload from segments/toolCall and ignore the
         // mirrored Room text field. Counting both made result-heavy contexts look up to 2x larger.
         var total = MESSAGE_OVERHEAD.toLong() +
-            if (isToolProtocol) 0L else estimateTextRaw(message.text)
+            if (isToolProtocol) 0L else estimateTextRaw(message.assembleText())
         total += message.images.size.toLong() * IMAGE_ESTIMATE
         if (isToolProtocol) {
             val segments = message.segments.orEmpty().filter { it.type == "tool" }

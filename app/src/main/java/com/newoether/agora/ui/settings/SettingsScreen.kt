@@ -247,6 +247,7 @@ private val baseSettingsGroups = listOf(
     SettingsGroupData(titleRes = R.string.settings_group_multimodal, items = listOf(
         SettingsCategory("transcription", R.string.settings_transcription, R.string.settings_transcription_desc, Icons.Default.ImageSearch),
         SettingsCategory("imagegen", R.string.settings_image_gen, R.string.settings_image_gen_desc, Icons.Default.AddPhotoAlternate),
+        SettingsCategory("imageupload", R.string.settings_image_upload, R.string.settings_image_upload_desc, Icons.Default.Upload),
     )),
     SettingsGroupData(titleRes = R.string.settings_group_tools, items = listOf(
         SettingsCategory("websearch", R.string.settings_web_search, R.string.settings_web_search_desc, Icons.Default.Language),
@@ -336,6 +337,7 @@ fun SettingsScreen(viewModel: ChatViewModel, onBack: () -> Unit) {
                 "context" -> SettingsContextPage(viewModel, onBack = { selectedCategory = null })
                 "websearch" -> SettingsWebSearchPage(viewModel, onBack = { selectedCategory = null })
                 "imagegen" -> SettingsImageGenPage(viewModel, onBack = { selectedCategory = null })
+                "imageupload" -> SettingsImageUploadPage(viewModel, onBack = { selectedCategory = null })
                 "shell" -> SettingsShellPage(viewModel, onBack = { selectedCategory = null })
                 "mcp" -> SettingsMcpPage(viewModel, onBack = { selectedCategory = null })
                 "automation" -> SettingsAutomationPage(viewModel, onBack = { selectedCategory = null })

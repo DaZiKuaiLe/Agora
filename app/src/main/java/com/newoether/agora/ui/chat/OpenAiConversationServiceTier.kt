@@ -4,7 +4,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.newoether.agora.data.CustomProviderConfig
-import com.newoether.agora.data.ConversationSettings
 import com.newoether.agora.data.isResponsesApiEnabledForProvider
 import com.newoether.agora.model.OpenAiServiceTiers
 import com.newoether.agora.ui.common.AgoraHaptics
@@ -19,7 +18,6 @@ internal data class OpenAiConversationServiceTierState(
 internal fun resolveOpenAiConversationServiceTier(
     globalEnabled: Boolean,
     globalTier: String,
-    conversationOverride: ConversationSettings?,
     providerName: String,
     builtInOpenAiResponsesEnabled: Boolean,
     customProviders: List<CustomProviderConfig>,
@@ -29,16 +27,13 @@ internal fun resolveOpenAiConversationServiceTier(
         builtInOpenAiEnabled = builtInOpenAiResponsesEnabled,
         customProviders = customProviders,
     ),
-    enabled = conversationOverride?.openAiServiceTierEnabled ?: globalEnabled,
-    tier = OpenAiServiceTiers.normalize(
-        conversationOverride?.openAiServiceTier ?: globalTier,
-    ),
+    enabled = globalEnabled,
+    tier = OpenAiServiceTiers.normalize(globalTier),
 )
 
 @Composable
 internal fun openAiConversationServiceTierState(
     viewModel: ChatViewModel,
-    conversationOverride: ConversationSettings?,
     providerName: String,
     builtInOpenAiResponsesEnabled: Boolean,
     customProviders: List<CustomProviderConfig>,
@@ -48,7 +43,6 @@ internal fun openAiConversationServiceTierState(
     return resolveOpenAiConversationServiceTier(
         globalEnabled = globalEnabled,
         globalTier = globalTier,
-        conversationOverride = conversationOverride,
         providerName = providerName,
         builtInOpenAiResponsesEnabled = builtInOpenAiResponsesEnabled,
         customProviders = customProviders,
@@ -57,24 +51,18 @@ internal fun openAiConversationServiceTierState(
 
 internal fun updateOpenAiConversationServiceTierEnabled(
     viewModel: ChatViewModel,
-    conversationId: String?,
     haptics: AgoraHaptics,
     enabled: Boolean,
 ) {
     haptics.toggle(enabled)
-    viewModel.updateConversationSetting(conversationId) {
-        it.copy(openAiServiceTierEnabled = enabled)
-    }
+    viewModel.settings.setOpenAiServiceTierEnabled(enabled)
 }
 
 internal fun updateOpenAiConversationServiceTier(
     viewModel: ChatViewModel,
-    conversationId: String?,
     haptics: AgoraHaptics,
     tier: String,
 ) {
     haptics.selection()
-    viewModel.updateConversationSetting(conversationId) {
-        it.copy(openAiServiceTier = OpenAiServiceTiers.normalize(tier))
-    }
+    viewModel.settings.setOpenAiServiceTier(tier)
 }

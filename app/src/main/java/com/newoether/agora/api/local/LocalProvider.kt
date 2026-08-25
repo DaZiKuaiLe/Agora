@@ -7,6 +7,7 @@ import com.newoether.agora.R
 import com.newoether.agora.util.DebugLog
 import com.newoether.agora.api.util.ThinkingParser
 import com.newoether.agora.api.util.prepareMessages
+import com.newoether.agora.api.util.assembleText
 import com.newoether.agora.data.repository.SettingsRepository
 import com.newoether.agora.model.ChatMessage
 import com.newoether.agora.model.Participant
@@ -300,9 +301,9 @@ class LocalProvider(
             val images = msg.images.filter { it.isNotBlank() }
             val content = if (role == "user" && images.isNotEmpty() && imagePathsOut != null) {
                 imagePathsOut.addAll(images)
-                images.joinToString("\n") { "<__media__>" } + "\n" + msg.text
+                images.joinToString("\n") { "<__media__>" } + "\n" + msg.assembleText()
             } else {
-                msg.text
+                msg.assembleText()
             }
 
             result.add(ChatTemplateMessage(role = role, content = content))

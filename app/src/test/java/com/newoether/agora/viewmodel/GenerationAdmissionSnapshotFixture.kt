@@ -33,7 +33,7 @@ internal fun testGenerationAdmissionSnapshot(
         context = context,
         automaticCompact = AutomaticCompactConfig(
             enabled = true,
-            thresholdPercent = 90,
+            compactThreshold = 32_768,
             request = CompactRequest(
                 model = selectedModelId,
                 prompt = "compact prompt",

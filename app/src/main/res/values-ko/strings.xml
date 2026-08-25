@@ -231,6 +231,10 @@
     <string name="image_gen_size">기본 크기</string>
     <string name="image_gen_size_hint">1024x1024</string>
     <string name="image_gen_show_all">모든 모델 표시</string>
+    <string name="settings_image_upload">이미지 업로드</string>
+    <string name="settings_image_upload_desc">보내기 전에 업로드 이미지 축소를 제어합니다</string>
+    <string name="image_upload_max_dimension">해상도 상한</string>
+    <string name="image_upload_max_dimension_desc">업로드 이미지의 가장 긴 변. 낮을수록 토큰이 적고 세부 사항이 줄어듭니다.</string>
     <string name="tool_generate_image">이미지 생성</string>
     <string name="tool_generating_image">이미지 생성 중…</string>
     <string name="tool_generated_image">이미지 생성됨</string>
@@ -319,6 +323,8 @@
     <string name="context_window">컨텍스트 창</string>
     <string name="context_window_desc">한 번의 생성에 사용할 수 있는 최대 컨텍스트</string>
     <string name="context_window_default">기본 컨텍스트 창</string>
+    <string name="context_limit">컨텍스트 한도</string>
+    <string name="compact_threshold">압축 임계값</string>
     <string name="context_token_budget_value">예상 토큰 %1$s개</string>
     <string name="context_retain">최근 메시지 %1$d개 유지</string>
     <string name="context_visualize">컨텍스트 전개 시각화</string>
@@ -393,6 +399,8 @@
     <string name="web_search_tavily">Tavily</string>
     <string name="web_search_searxng">SearXNG</string>
     <string name="web_search_duckduckgo">DuckDuckGo</string>
+    <string name="web_search_baidu">Baidu 검색</string>
+    <string name="web_search_baidu_desc">Baidu Qianfan AI 검색. 신뢰할 수 있는 중국어 검색 범위와 시의적절한 결과.</string>
     <string name="web_search_brave_desc">개인정보 보호 중심 검색 API. 무료 등급 제공.</string>
     <string name="web_search_serper_desc">빠른 Google 검색 API. 월 2,500회 무료 쿼리.</string>
     <string name="web_search_tavily_desc">AI에 최적화된 검색 API. LLM 에이전트용으로 제작.</string>
@@ -405,10 +413,14 @@
     <string name="web_search_serper_key_hint">serper.dev의 API 키</string>
     <string name="web_search_tavily_key">Tavily API 키</string>
     <string name="web_search_tavily_key_hint">tavily.com의 API 키</string>
-    <string name="web_search_num_results">최대 결과 수</string>
-    <string name="web_search_num_results_desc">가져올 결과 수: %1$d(1-10)</string>
+    <string name="web_search_baidu_key">Baidu Qianfan API 키</string>
+    <string name="web_search_baidu_key_hint">qianfan.baidubce.com(V2 콘솔)의 API 키</string>
+
+    <string name="web_search_zhipu">Zhipu AI 검색</string>
+    <string name="web_search_zhipu_desc">Zhipu 웹 검색. 다중 엔진(Sogou/Quark)으로 롱테일 재현율이 높음.</string>
+    <string name="web_search_zhipu_key">Zhipu API 키</string>
+    <string name="web_search_zhipu_key_hint">open.bigmodel.cn의 API 키</string>
     <string name="web_search_searxng_fallback_desc">공개 인스턴스는 종종 속도 제한이 있습니다. 안정적인 사용을 위해 자체 호스팅을 권장합니다.</string>
-    <string name="web_search_advanced">고급</string>
     <string name="web_search_searxng_url">SearXNG 기본 URL</string>
     <string name="web_search_searxng_url_hint">https://searx.be</string>
 

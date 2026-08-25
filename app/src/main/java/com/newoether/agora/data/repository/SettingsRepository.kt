@@ -7,8 +7,8 @@ import com.newoether.agora.data.ApiKeyEntry
 import com.newoether.agora.data.BuiltInPrompts
 import com.newoether.agora.data.DEFAULT_CONTEXT_COMPACT_ENABLED
 import com.newoether.agora.data.DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT
-import com.newoether.agora.data.DEFAULT_CONTEXT_COMPACT_THRESHOLD_PERCENT
-import com.newoether.agora.data.ConversationSettings
+import com.newoether.agora.data.ConversationToolState
+import com.newoether.agora.data.ModelGenerationSettings
 import com.newoether.agora.data.CustomEndpointProtocol
 import com.newoether.agora.data.CustomEndpointResolution
 import com.newoether.agora.data.CustomProviderConfig
@@ -79,7 +79,7 @@ class SettingsRepository(
     private val conversationSettingsState = ConversationSettingsState()
     private val conversationSettingsWriteMutex = Mutex()
 
-    private fun hotConversationSettings(): StateFlow<Map<String, ConversationSettings>> {
+    private fun hotConversationSettings(): StateFlow<Map<String, ConversationToolState>> {
         val loaded = CompletableDeferred<Unit>()
         initialLoadSignals += loaded
         settingsManager.conversationSettings
@@ -112,6 +112,8 @@ class SettingsRepository(
     val customModels: StateFlow<Set<String>> = hot(settingsManager.customModels, emptySet())
     val enabledModels: StateFlow<Set<String>> = hot(settingsManager.enabledModels, emptySet())
     val modelAliases: StateFlow<Map<String, String>> = hot(settingsManager.modelAliases, emptyMap())
+    val modelGenerationSettings: StateFlow<Map<String, ModelGenerationSettings>> =
+        hot(settingsManager.modelGenerationSettings, emptyMap())
     val apiKeys: StateFlow<List<ApiKeyEntry>> = hot(settingsManager.apiKeys, emptyList())
     val activeApiKeyIds: StateFlow<Map<String, String>> = hot(settingsManager.activeApiKeyIds, emptyMap())
     val systemPrompts: StateFlow<List<SystemPromptEntry>> = hot(settingsManager.systemPrompts, emptyList())
@@ -129,16 +131,8 @@ class SettingsRepository(
         settingsManager.contextCompactRetainCount,
         DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT,
     )
-    val contextCompactThresholdPercent: StateFlow<Int> = hot(
-        settingsManager.contextCompactThresholdPercent,
-        DEFAULT_CONTEXT_COMPACT_THRESHOLD_PERCENT,
-    )
     val codeExecutionEnabled: StateFlow<Boolean> = hot(settingsManager.codeExecutionEnabled, false)
     val googleSearchEnabled: StateFlow<Boolean> = hot(settingsManager.googleSearchEnabled, false)
-    val thinkingEnabled: StateFlow<Boolean> = hot(settingsManager.thinkingEnabled, true)
-    val thinkingLevel: StateFlow<String> = hot(settingsManager.thinkingLevel, "medium")
-    val thinkingBudgetEnabled: StateFlow<Boolean> = hot(settingsManager.thinkingBudgetEnabled, false)
-    val thinkingBudgetTokens: StateFlow<Int> = hot(settingsManager.thinkingBudgetTokens, 4096)
     val openAiServiceTierEnabled: StateFlow<Boolean> =
         hot(settingsManager.openAiServiceTierEnabled, false)
     val openAiServiceTier: StateFlow<String> =
@@ -174,13 +168,13 @@ class SettingsRepository(
     val activeEmbeddingModelId: StateFlow<String> = hot(settingsManager.activeEmbeddingModelId, "")
     val appLanguage: StateFlow<String> = hot(settingsManager.appLanguage, "system")
     val webSearchEnabled: StateFlow<Boolean> = hot(settingsManager.webSearchEnabled, false)
-    val webSearchProvider: StateFlow<String> = hot(settingsManager.webSearchProvider, "duckduckgo")
+    val webSearchProvider: StateFlow<String> = hot(settingsManager.webSearchProvider, "baidu")
     val webSearchApiKeys: StateFlow<Map<String, String>> = hot(settingsManager.webSearchApiKeys, emptyMap())
-    val webSearchNumResults: StateFlow<Int> = hot(settingsManager.webSearchNumResults, 5)
     val webSearchBaseUrl: StateFlow<String> = hot(settingsManager.webSearchBaseUrl, "")
     val imageGenEnabled: StateFlow<Boolean> = hot(settingsManager.imageGenEnabled, false)
     val imageGenModel: StateFlow<String?> = hot(settingsManager.imageGenModel, null)
     val imageGenSize: StateFlow<String> = hot(settingsManager.imageGenSize, "1024x1024")
+    val imageUploadMaxDimension: StateFlow<Int> = hot(settingsManager.imageUploadMaxDimension, 512)
     val showDocumentationFab: StateFlow<Boolean> = hot(settingsManager.showDocumentationFab, true)
     val developerOptionsEnabled: StateFlow<Boolean> =
         hot(settingsManager.developerOptionsEnabled, false)
@@ -205,7 +199,7 @@ class SettingsRepository(
     val defaultTopP: StateFlow<Float?> = hot(settingsManager.defaultTopP, null)
     val defaultFrequencyPenalty: StateFlow<Float?> = hot(settingsManager.defaultFrequencyPenalty, null)
     val defaultPresencePenalty: StateFlow<Float?> = hot(settingsManager.defaultPresencePenalty, null)
-    val conversationSettings: StateFlow<Map<String, ConversationSettings>> = hotConversationSettings()
+    val conversationSettings: StateFlow<Map<String, ConversationToolState>> = hotConversationSettings()
     val themeMode: StateFlow<String> = hot(settingsManager.themeMode, "FOLLOW_DEVICE")
     val colorScheme: StateFlow<String> = hot(settingsManager.colorScheme, "DEFAULT")
     val dynamicColor: StateFlow<Boolean> = hot(settingsManager.dynamicColor, true)
@@ -265,6 +259,10 @@ class SettingsRepository(
         scope.launch {
             settingsManager.updateModelAlias(model, alias)
         }
+    }
+
+    fun setModelGenerationSetting(modelId: String, settings: ModelGenerationSettings?) {
+        scope.launch { settingsManager.saveModelGenerationSetting(modelId, settings) }
     }
 
     fun addCustomModel(provider: String, modelName: String, alias: String = "") {
@@ -469,13 +467,13 @@ class SettingsRepository(
     fun removeMcpServer(serverId: String) =
         scope.launch { settingsManager.saveMcpServers(mcpServers.value.filter { it.id != serverId }) }
 
-    fun setConversationSettings(convId: String, settings: ConversationSettings?) {
+    fun setConversationSettings(convId: String, settings: ConversationToolState?) {
         persistConversationSettings(conversationSettingsState.set(convId, settings))
     }
 
     fun updateConversationSettings(
         convId: String,
-        update: (ConversationSettings) -> ConversationSettings,
+        update: (ConversationToolState) -> ConversationToolState,
     ) {
         persistConversationSettings(conversationSettingsState.update(convId, update))
     }
@@ -515,9 +513,6 @@ class SettingsRepository(
     fun setContextCompactModel(model: String?) = scope.launch { settingsManager.saveContextCompactModel(model) }
     fun setContextCompactPrompt(prompt: String) = scope.launch { settingsManager.saveContextCompactPrompt(prompt) }
     fun setContextCompactRetainCount(count: Int) = scope.launch { settingsManager.saveContextCompactRetainCount(count) }
-    fun setContextCompactThresholdPercent(percent: Int) = scope.launch {
-        settingsManager.saveContextCompactThresholdPercent(percent)
-    }
 
     fun setTitleGenerationModel(model: String?) = scope.launch { settingsManager.saveTitleGenerationModel(model) }
     fun setTitleGenerationPrompt(prompt: String) = scope.launch { settingsManager.saveTitleGenerationPrompt(prompt) }
@@ -541,11 +536,11 @@ class SettingsRepository(
     fun setWebSearchEnabled(enabled: Boolean) = scope.launch { settingsManager.saveWebSearchEnabled(enabled) }
     fun setWebSearchProvider(provider: String) = scope.launch { settingsManager.saveWebSearchProvider(provider) }
     fun setWebSearchApiKey(provider: String, apiKey: String) = scope.launch { settingsManager.saveWebSearchApiKey(provider, apiKey) }
-    fun setWebSearchNumResults(n: Int) = scope.launch { settingsManager.saveWebSearchNumResults(n) }
     fun setWebSearchBaseUrl(url: String) = scope.launch { settingsManager.saveWebSearchBaseUrl(url) }
     fun setImageGenEnabled(enabled: Boolean) = scope.launch { settingsManager.saveImageGenEnabled(enabled) }
     fun setImageGenModel(model: String?) = scope.launch { settingsManager.saveImageGenModel(model) }
     fun setImageGenSize(size: String) = scope.launch { settingsManager.saveImageGenSize(size) }
+    fun setImageUploadMaxDimension(value: Int) = scope.launch { settingsManager.saveImageUploadMaxDimension(value) }
     fun setShowDocumentationFab(enabled: Boolean) = scope.launch { settingsManager.saveShowDocumentationFab(enabled) }
     fun setDeveloperOptionsEnabled(enabled: Boolean) =
         scope.launch { settingsManager.saveDeveloperOptionsEnabled(enabled) }
@@ -562,10 +557,6 @@ class SettingsRepository(
     fun setSandboxEnabled(enabled: Boolean) = scope.launch { settingsManager.saveSandboxEnabled(enabled) }
     fun setSandboxSharedStorageEnabled(enabled: Boolean) =
         scope.launch { settingsManager.saveSandboxSharedStorageEnabled(enabled) }
-    fun setThinkingEnabled(enabled: Boolean) = scope.launch { settingsManager.saveThinkingEnabled(enabled) }
-    fun setThinkingLevel(level: String) = scope.launch { settingsManager.saveThinkingLevel(level) }
-    fun setThinkingBudgetEnabled(enabled: Boolean) = scope.launch { settingsManager.saveThinkingBudgetEnabled(enabled) }
-    fun setThinkingBudgetTokens(tokens: Int) = scope.launch { settingsManager.saveThinkingBudgetTokens(tokens) }
     fun setOpenAiServiceTierEnabled(enabled: Boolean) =
         scope.launch { settingsManager.saveOpenAiServiceTierEnabled(enabled) }
     fun setOpenAiServiceTier(tier: String) =

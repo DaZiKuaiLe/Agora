@@ -2,7 +2,6 @@ package com.newoether.agora.data
 
 import android.content.Context
 import com.newoether.agora.model.OpenAiServiceTiers
-import com.newoether.agora.model.ThinkingLevels
 import com.newoether.agora.model.ContextBudget
 import com.newoether.agora.model.ThinkingSegmentDisplayModes
 import com.newoether.agora.model.ToolCallDisplayModes
@@ -17,9 +16,7 @@ import java.util.Locale
 import kotlinx.coroutines.flow.map
 
 internal const val DEFAULT_CONTEXT_COMPACT_ENABLED = true
-internal const val DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT = 0
-internal const val DEFAULT_CONTEXT_COMPACT_THRESHOLD_PERCENT = 90
-internal val CONTEXT_COMPACT_THRESHOLD_PERCENT_RANGE = 50..100
+internal const val DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT = 5
 
 private val Context.dataStore by preferencesDataStore(name = "settings")
 
@@ -42,6 +39,8 @@ class SettingsManager(private val context: Context) {
     val customModels: Flow<Set<String>> = modelPreferenceStore.customModels
     val enabledModels: Flow<Set<String>> = modelPreferenceStore.enabledModels
     val modelAliases: Flow<Map<String, String>> = modelPreferenceStore.modelAliases
+    val modelGenerationSettings: Flow<Map<String, ModelGenerationSettings>> =
+        modelPreferenceStore.modelGenerationSettings
     val apiKeys: Flow<List<ApiKeyEntry>> = modelPreferenceStore.apiKeys
     val activeApiKeyIds: Flow<Map<String, String>> = modelPreferenceStore.activeApiKeyIds
 
@@ -69,23 +68,8 @@ class SettingsManager(private val context: Context) {
     val contextCompactRetainCount: Flow<Int> = context.dataStore.data.map {
         it[CONTEXT_COMPACT_RETAIN_COUNT] ?: DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT
     }
-    val contextCompactThresholdPercent: Flow<Int> = context.dataStore.data.map {
-        it[CONTEXT_COMPACT_THRESHOLD_PERCENT]
-            ?.takeIf(CONTEXT_COMPACT_THRESHOLD_PERCENT_RANGE::contains)
-            ?: DEFAULT_CONTEXT_COMPACT_THRESHOLD_PERCENT
-    }
     val codeExecutionEnabled: Flow<Boolean> = context.dataStore.data.map { it[CODE_EXECUTION_ENABLED] ?: false }
     val googleSearchEnabled: Flow<Boolean> = context.dataStore.data.map { it[GOOGLE_SEARCH_ENABLED] ?: false }
-    val thinkingEnabled: Flow<Boolean> = context.dataStore.data.map { it[THINKING_ENABLED] ?: true }
-    val thinkingLevel: Flow<String> = context.dataStore.data.map { ThinkingLevels.normalize(it[THINKING_LEVEL]) }
-    val thinkingBudgetEnabled: Flow<Boolean> = context.dataStore.data.map { pref ->
-        pref[THINKING_BUDGET_ENABLED] ?: (ThinkingLevels.legacyBudgetTokens(pref[THINKING_LEVEL]) != null)
-    }
-    val thinkingBudgetTokens: Flow<Int> = context.dataStore.data.map { pref ->
-        pref[THINKING_BUDGET_TOKENS]
-            ?: ThinkingLevels.legacyBudgetTokens(pref[THINKING_LEVEL])
-            ?: ThinkingLevels.DefaultBudgetTokens
-    }
     val openAiServiceTierEnabled: Flow<Boolean> =
         context.dataStore.data.map { it[OPENAI_SERVICE_TIER_ENABLED] ?: false }
     val openAiServiceTier: Flow<String> = context.dataStore.data.map { pref ->
@@ -136,7 +120,6 @@ class SettingsManager(private val context: Context) {
     val webSearchApiKeys: Flow<Map<String, String>> = context.dataStore.data.map { preferences ->
         decodeWebSearchApiKeys(preferences, json)
     }
-    val webSearchNumResults: Flow<Int> = context.dataStore.data.map { it[WEB_SEARCH_NUM_RESULTS] ?: 5 }
     val webSearchBaseUrl: Flow<String> = context.dataStore.data.map { it[WEB_SEARCH_BASE_URL] ?: "" }
 
     // ── Image generation ──────────────────────────────────────
@@ -144,6 +127,7 @@ class SettingsManager(private val context: Context) {
     // Selected image model "Provider:modelId" (null = none chosen). Creds reused from that provider.
     val imageGenModel: Flow<String?> = context.dataStore.data.map { it[IMAGE_GEN_MODEL] }
     val imageGenSize: Flow<String> = context.dataStore.data.map { it[IMAGE_GEN_SIZE] ?: "1024x1024" }
+    val imageUploadMaxDimension: Flow<Int> = context.dataStore.data.map { it[IMAGE_UPLOAD_MAX_DIMENSION] ?: 512 }
     val searchContextWindow: Flow<Int> = context.dataStore.data.map { it[SEARCH_CONTEXT_WINDOW] ?: 8 }
     val searchMatchLimit: Flow<Int> = context.dataStore.data.map { it[SEARCH_MATCH_LIMIT] ?: 10 }
     val ragThreshold: Flow<Float> = context.dataStore.data.map { it[RAG_THRESHOLD]?.toFloatOrNull() ?: 0.5f }
@@ -152,8 +136,8 @@ class SettingsManager(private val context: Context) {
     val defaultTopP: Flow<Float?> = context.dataStore.data.map { it[DEFAULT_TOP_P]?.toFloatOrNull() }
     val defaultFrequencyPenalty: Flow<Float?> = context.dataStore.data.map { it[DEFAULT_FREQUENCY_PENALTY]?.toFloatOrNull() }
     val defaultPresencePenalty: Flow<Float?> = context.dataStore.data.map { it[DEFAULT_PRESENCE_PENALTY]?.toFloatOrNull() }
-    val conversationSettings: Flow<Map<String, ConversationSettings>> =
-        context.dataStore.data.map { preferences -> decodeConversationSettings(preferences, json) }
+    val conversationSettings: Flow<Map<String, ConversationToolState>> =
+        context.dataStore.data.map { preferences -> decodeConversationToolState(preferences, json) }
     val autoCacheEnabled: Flow<Boolean> = context.dataStore.data.map { it[AUTO_CACHE_ENABLED] ?: true }
     val autoUpdateCheck: Flow<Boolean> = context.dataStore.data.map { it[AUTO_UPDATE_CHECK] ?: true }
     val lastUpdateCheckTime: Flow<Long> = context.dataStore.data.map { it[LAST_UPDATE_CHECK_TIME] ?: 0L }
@@ -265,6 +249,9 @@ class SettingsManager(private val context: Context) {
 
     suspend fun saveModelAliases(aliases: Map<String, String>) =
         modelPreferenceStore.saveModelAliases(aliases)
+
+    suspend fun saveModelGenerationSetting(modelId: String, settings: ModelGenerationSettings?) =
+        modelPreferenceStore.saveModelGenerationSetting(modelId, settings)
 
     suspend fun updateModelAlias(modelId: String, alias: String) =
         modelPreferenceStore.updateModelAlias(modelId, alias)
@@ -390,18 +377,6 @@ class SettingsManager(private val context: Context) {
     suspend fun saveGoogleSearchEnabled(enabled: Boolean) {
         context.dataStore.edit { it[GOOGLE_SEARCH_ENABLED] = enabled }
     }
-    suspend fun saveThinkingEnabled(enabled: Boolean) {
-        context.dataStore.edit { it[THINKING_ENABLED] = enabled }
-    }
-    suspend fun saveThinkingLevel(level: String) {
-        context.dataStore.edit { it[THINKING_LEVEL] = ThinkingLevels.normalize(level) }
-    }
-    suspend fun saveThinkingBudgetEnabled(enabled: Boolean) {
-        context.dataStore.edit { it[THINKING_BUDGET_ENABLED] = enabled }
-    }
-    suspend fun saveThinkingBudgetTokens(tokens: Int) {
-        context.dataStore.edit { it[THINKING_BUDGET_TOKENS] = tokens.coerceAtLeast(1) }
-    }
     suspend fun saveOpenAiServiceTierEnabled(enabled: Boolean) {
         context.dataStore.edit { it[OPENAI_SERVICE_TIER_ENABLED] = enabled }
     }
@@ -486,9 +461,6 @@ class SettingsManager(private val context: Context) {
             }
         }
     }
-    suspend fun saveWebSearchNumResults(n: Int) {
-        context.dataStore.edit { it[WEB_SEARCH_NUM_RESULTS] = n.coerceIn(1, 10) }
-    }
     suspend fun saveWebSearchBaseUrl(url: String) {
         context.dataStore.edit { it[WEB_SEARCH_BASE_URL] = url }
     }
@@ -502,6 +474,9 @@ class SettingsManager(private val context: Context) {
     }
     suspend fun saveImageGenSize(size: String) {
         context.dataStore.edit { it[IMAGE_GEN_SIZE] = size }
+    }
+    suspend fun saveImageUploadMaxDimension(value: Int) {
+        context.dataStore.edit { it[IMAGE_UPLOAD_MAX_DIMENSION] = value }
     }
     suspend fun saveSearchMatchLimit(n: Int) {
         context.dataStore.edit { it[SEARCH_MATCH_LIMIT] = n }
@@ -539,12 +514,12 @@ class SettingsManager(private val context: Context) {
     }
     suspend fun saveConversationSettings(
         conversationId: String,
-        settings: ConversationSettings?,
-    ): Map<String, ConversationSettings> {
-        var updated: Map<String, ConversationSettings> = emptyMap()
+        settings: ConversationToolState?,
+    ): Map<String, ConversationToolState> {
+        var updated: Map<String, ConversationToolState> = emptyMap()
         context.dataStore.edit { prefs ->
             val current = prefs[CONVERSATION_SETTINGS_JSON] ?: "{}"
-            val map = try { json.decodeFromString<MutableMap<String, ConversationSettings>>(current) } catch (e: Exception) { mutableMapOf() }
+            val map = try { json.decodeFromString<MutableMap<String, ConversationToolState>>(current) } catch (e: Exception) { mutableMapOf() }
             if (settings == null || settings.isAllNull()) map.remove(conversationId)
             else map[conversationId] = settings
             updated = map.toMap()
@@ -552,7 +527,7 @@ class SettingsManager(private val context: Context) {
         }
         return updated
     }
-    suspend fun saveConversationSettingsMap(settings: Map<String, ConversationSettings>) {
+    suspend fun saveConversationSettingsMap(settings: Map<String, ConversationToolState>) {
         val nonEmpty = settings.filterValues { !it.isAllNull() }
         context.dataStore.edit { prefs ->
             if (nonEmpty.isEmpty()) {
@@ -591,11 +566,6 @@ class SettingsManager(private val context: Context) {
     suspend fun saveContextCompactRetainCount(count: Int) {
         require(count >= 0)
         context.dataStore.edit { it[CONTEXT_COMPACT_RETAIN_COUNT] = count }
-    }
-
-    suspend fun saveContextCompactThresholdPercent(percent: Int) {
-        require(percent in CONTEXT_COMPACT_THRESHOLD_PERCENT_RANGE)
-        context.dataStore.edit { it[CONTEXT_COMPACT_THRESHOLD_PERCENT] = percent }
     }
 
     suspend fun saveTitleGenerationModel(model: String?) {
@@ -783,13 +753,8 @@ class SettingsManager(private val context: Context) {
             prefs.remove(CONTEXT_COMPACT_MODEL)
             prefs.remove(CONTEXT_COMPACT_PROMPT)
             prefs.remove(CONTEXT_COMPACT_RETAIN_COUNT)
-            prefs.remove(CONTEXT_COMPACT_THRESHOLD_PERCENT)
             prefs.remove(CODE_EXECUTION_ENABLED)
             prefs.remove(GOOGLE_SEARCH_ENABLED)
-            prefs.remove(THINKING_ENABLED)
-            prefs.remove(THINKING_LEVEL)
-            prefs.remove(THINKING_BUDGET_ENABLED)
-            prefs.remove(THINKING_BUDGET_TOKENS)
             prefs.remove(OPENAI_SERVICE_TIER_ENABLED)
             prefs.remove(OPENAI_SERVICE_TIER)
             prefs.remove(OPENAI_RESPONSES_API_ENABLED)
@@ -814,11 +779,11 @@ class SettingsManager(private val context: Context) {
             prefs.remove(APP_LANGUAGE)
             prefs.remove(WEB_SEARCH_ENABLED)
             prefs.remove(WEB_SEARCH_PROVIDER)
-            prefs.remove(WEB_SEARCH_NUM_RESULTS)
             prefs.remove(WEB_SEARCH_BASE_URL)
             prefs.remove(IMAGE_GEN_ENABLED)
             prefs.remove(IMAGE_GEN_MODEL)
             prefs.remove(IMAGE_GEN_SIZE)
+            prefs.remove(IMAGE_UPLOAD_MAX_DIMENSION)
             prefs.remove(SEARCH_CONTEXT_WINDOW)
             prefs.remove(SEARCH_MATCH_LIMIT)
             prefs.remove(RAG_THRESHOLD)

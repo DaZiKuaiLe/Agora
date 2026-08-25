@@ -132,17 +132,11 @@ private fun Request.Builder.applyMcpHeaders(headers: Map<String, String>) = appl
     headers.forEach { (name, value) -> header(name, value) }
 }
 
-private fun guardMcpCredentials(endpoint: String, headers: Map<String, String>) {
-    HttpClient.guardCleartextCredentials(
-        endpoint,
-        if (headers.isEmpty()) {
-            emptyMap()
-        } else {
-            // Header names are user-defined, so conservatively treat every non-empty set as
-            // credentials when applying the cleartext transport guard.
-            headers + ("Authorization" to "<configured>")
-        },
-    )
+internal fun guardMcpCredentials(endpoint: String, headers: Map<String, String>) {
+    // MCP servers are user-supplied endpoints. Allow http:// to any host, including with custom
+    // header credentials, since the user explicitly configured this server. The shared provider
+    // cleartext guard (HttpClient.guardCleartextCredentials) intentionally does not apply here
+    // so a self-hosted or public MCP endpoint can be reached over plain HTTP.
 }
 
 private suspend fun Call.awaitResponse(activeCalls: MutableSet<Call>): Response =

@@ -231,6 +231,10 @@
     <string name="image_gen_size">الحجم الافتراضي</string>
     <string name="image_gen_size_hint">1024x1024</string>
     <string name="image_gen_show_all">عرض كل النماذج</string>
+    <string name="settings_image_upload">رفع الصور</string>
+    <string name="settings_image_upload_desc">التحكم في تقليص حجم الصور المرفوعة قبل إرسالها</string>
+    <string name="image_upload_max_dimension">حد الدقة</string>
+    <string name="image_upload_max_dimension_desc">أطول حافة في الصورة المرفوعة. أقل = عدد رموز أقل، وتفاصيل أقل.</string>
     <string name="tool_generate_image">توليد صورة</string>
     <string name="tool_generating_image">جارٍ توليد الصورة…</string>
     <string name="tool_generated_image">تم توليد الصورة</string>
@@ -319,6 +323,8 @@
     <string name="context_window">نافذة السياق</string>
     <string name="context_window_desc">الحد الأقصى للسياق المتاح لعملية التوليد</string>
     <string name="context_window_default">نافذة السياق الافتراضية</string>
+    <string name="context_limit">حد السياق</string>
+    <string name="compact_threshold">عتبة الضغط</string>
     <string name="context_token_budget_value">حوالي %1$s من الرموز</string>
     <string name="context_retain">الاحتفاظ بـ %1$d رسالة حديثة</string>
     <string name="context_visualize">تصوّر امتداد السياق</string>
@@ -393,6 +399,8 @@
     <string name="web_search_tavily">Tavily</string>
     <string name="web_search_searxng">SearXNG</string>
     <string name="web_search_duckduckgo">DuckDuckGo</string>
+    <string name="web_search_baidu">بحث بايدو</string>
+    <string name="web_search_baidu_desc">بحث بايدو تشيانفان AI. تغطية صينية موثوقة ونتائج في الوقت المناسب.</string>
     <string name="web_search_brave_desc">واجهة بحث تركّز على الخصوصية. تتوفر باقة مجانية.</string>
     <string name="web_search_serper_desc">واجهة بحث Google سريعة. 2,500 استعلام مجاني شهريًا.</string>
     <string name="web_search_tavily_desc">واجهة بحث محسّنة للذكاء الاصطناعي. مصممة لوكلاء LLM.</string>
@@ -405,10 +413,14 @@
     <string name="web_search_serper_key_hint">مفتاح API من serper.dev</string>
     <string name="web_search_tavily_key">مفتاح API لـ Tavily</string>
     <string name="web_search_tavily_key_hint">مفتاح API من tavily.com</string>
-    <string name="web_search_num_results">أقصى عدد للنتائج</string>
-    <string name="web_search_num_results_desc">عدد النتائج المراد جلبها: %1$d (1-10)</string>
+    <string name="web_search_baidu_key">مفتاح API لـ Baidu Qianfan</string>
+    <string name="web_search_baidu_key_hint">مفتاح API من qianfan.baidubce.com (وحدة تحكم V2)</string>
+
+    <string name="web_search_zhipu">بحث Zhipu AI</string>
+    <string name="web_search_zhipu_desc">بحث الويب من Zhipu. محركات متعددة (Sogou/Quark) مع استرجاع قوي للمحتوى المتخصص.</string>
+    <string name="web_search_zhipu_key">مفتاح API لـ Zhipu</string>
+    <string name="web_search_zhipu_key_hint">مفتاح API من open.bigmodel.cn</string>
     <string name="web_search_searxng_fallback_desc">غالبًا ما تكون النسخ العامة محدودة المعدل. يُوصى بالاستضافة الذاتية للاستخدام الموثوق.</string>
-    <string name="web_search_advanced">متقدم</string>
     <string name="web_search_searxng_url">عنوان URL الأساسي لـ SearXNG</string>
     <string name="web_search_searxng_url_hint">https://searx.be</string>
 

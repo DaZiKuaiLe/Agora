@@ -439,7 +439,6 @@ internal class MessageGenerationController(
                 when (
                     val compact = compactController.startAutomaticBeforeSend(
                         conversationId = genId,
-                        contextLimit = snapshot.config.maxContextWindow,
                         config = snapshot.automaticCompact.copy(fixedTokenCost = fixedTokenCost),
                         state = state,
                     )
@@ -734,7 +733,6 @@ internal class MessageGenerationController(
             state.awaitSendAvailable()
             val compactLaunch = compactController.startAutomaticStandard(
                 conversationId = request.generationRequest.conversationId,
-                contextLimit = request.generationRequest.snapshot.config.maxContextWindow,
                 config = request.config,
                 state = state,
             ) ?: return@launch

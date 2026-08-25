@@ -2,7 +2,7 @@ package com.newoether.agora.viewmodel
 
 import android.content.Context
 import com.newoether.agora.R
-import com.newoether.agora.data.ConversationSettings
+import com.newoether.agora.data.ConversationToolState
 import com.newoether.agora.data.CustomProviderConfig
 import com.newoether.agora.data.MemoryManager
 import com.newoether.agora.data.SkillManager
@@ -23,7 +23,7 @@ class GenerationRequestBuilderProviderDisplayTest {
         val settings = mockk<SettingsRepository>()
         every { settings.conversationSettings } returns MutableStateFlow(
             mapOf(
-                "conversation" to ConversationSettings(
+                "conversation" to ConversationToolState(
                     webSearchEnabled = false,
                     shellEnabled = false,
                     openAiWebSearchEnabled = false,
@@ -38,27 +38,29 @@ class GenerationRequestBuilderProviderDisplayTest {
         every { settings.defaultPresencePenalty } returns MutableStateFlow(null)
         every { settings.codeExecutionEnabled } returns MutableStateFlow(false)
         every { settings.googleSearchEnabled } returns MutableStateFlow(false)
-        every { settings.thinkingEnabled } returns MutableStateFlow(true)
-        every { settings.thinkingLevel } returns MutableStateFlow("medium")
-        every { settings.thinkingBudgetEnabled } returns MutableStateFlow(false)
-        every { settings.thinkingBudgetTokens } returns MutableStateFlow(4096)
         every { settings.openAiServiceTierEnabled } returns MutableStateFlow(false)
         every { settings.openAiServiceTier } returns MutableStateFlow("auto")
         every { settings.webSearchEnabled } returns MutableStateFlow(true)
         every { settings.shellEnabled } returns MutableStateFlow(true)
+        every { settings.modelGenerationSettings } returns MutableStateFlow(
+            emptyMap<String, com.newoether.agora.data.ModelGenerationSettings>(),
+        )
+        val providerRegistry = mockk<ProviderRegistry>()
+        every { providerRegistry.canonicalModelId(any()) } returns "openai:model"
+        every { providerRegistry.providerForModel(any()) } returns "openai"
         val builder = GenerationRequestBuilder(
             settings = settings,
             convRepo = mockk<ConversationRepository>(),
             memoryManager = mockk<MemoryManager>(),
             skillManager = mockk<SkillManager>(),
-            providerRegistry = mockk<ProviderRegistry>(),
+            providerRegistry = providerRegistry,
             ragManager = mockk<RagManager>(),
             appContext = mockk<Context>(),
-            pendingConversationSettings = MutableStateFlow<ConversationSettings?>(null),
+            pendingConversationSettings = MutableStateFlow<ConversationToolState?>(null),
             onSnackbar = {},
         )
 
-        val effective = builder.buildEffectiveConversationSettings("conversation")
+        val effective = builder.buildEffectiveConversationSettings("conversation", "openai:model")
 
         assertEquals(false, effective.webSearchEnabled)
         assertEquals(false, effective.shellEnabled)
@@ -93,7 +95,7 @@ class GenerationRequestBuilderProviderDisplayTest {
             providerRegistry = providerRegistry,
             ragManager = mockk<RagManager>(),
             appContext = appContext,
-            pendingConversationSettings = MutableStateFlow<ConversationSettings?>(null),
+            pendingConversationSettings = MutableStateFlow<ConversationToolState?>(null),
             onSnackbar = snackbars::add,
         )
 

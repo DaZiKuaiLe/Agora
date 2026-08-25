@@ -183,7 +183,31 @@ internal object ShellToolDefinitions {
                     ),
                     required = listOf("pattern") + fileRequired
                 )
-            ))
+            )),
+            ToolDefinition(function = ToolFunction(
+                name = "upload_file_to_server",
+                description = "用 SFTP 把手机本地文件二进制上传到 SSH 服务器（不经过 base64）。local_path 填手机端文件绝对路径（来自用户消息里的 [本地图片 / 本地文件] 清单，如 image[0] 或 file[0] 的完整路径）；remote_path 填服务器目标路径。上传成功后可用 execute_shell_command 在同一台服务器上处理该文件。\n\n如果上传的是图片：你在用户消息里看到的图是为节省 token 而缩放后的版本，而 local_path 指向的是原始分辨率原图，服务端收到的也是原图；两者分辨率不一致属正常现象，请以服务端实际文件为准。\n\n只支持 type=ssh 的服务器。",
+                parameters = ToolParameters(
+                    properties = mapOf(
+                        "local_path" to ToolProperty("string", "手机端本地文件绝对路径（来自 [本地图片 / 本地文件] 清单，如 /data/user/0/.../img_x.jpg）。"),
+                        "remote_path" to ToolProperty("string", "服务器上的目标绝对路径，如 /data/uploads/img_x.jpg。"),
+                        "server" to fileServerProperty,
+                    ),
+                    required = listOf("local_path", "remote_path") + fileRequired
+                )
+            )),
+            ToolDefinition(function = ToolFunction(
+                name = "download_file",
+                description = "用 SFTP 把服务器上的文件下载到手机 App 专属目录。remote_path 填服务器路径；target_dir 可省略（默认 App 专属下载目录）。同名文件自动改名为 name(1).ext（不覆盖）。\n\n如果下载的是图片，会话里会自动预览；其它文件只返回本地路径，不会在工具面板预览。只支持 type=ssh 的服务器。",
+                parameters = ToolParameters(
+                    properties = mapOf(
+                        "remote_path" to ToolProperty("string", "服务器上的文件绝对路径（如为图片，下载后会预览）。"),
+                        "server" to fileServerProperty,
+                        "target_dir" to ToolProperty("string", "手机端目标目录（可选，默认 App 专属下载目录）。"),
+                    ),
+                    required = listOf("remote_path") + fileRequired
+                )
+            )),
         )
 
         val imageTools = if (conchDeviceNames.isEmpty()) {

@@ -206,6 +206,17 @@ internal class SshBackend(override val device: ShellDeviceConfig) : Backend {
     override suspend fun fileWrite(path: String, content: String): String? =
         client.fileWrite(path, content)?.let { jsonError("file_write", it, server = deviceName) }
 
+    suspend fun uploadFile(localPath: String, remotePath: String): String? =
+        client.uploadFile(localPath, remotePath)?.let { jsonError("upload_file_to_server", it, server = deviceName) }
+
+    /**
+     * SFTP download. [SshClient.downloadFile] returns the absolute local path on success or an
+     * error-string on failure, so we must NOT wrap the success path in jsonError — doing so would
+     * corrupt the returned path and the caller would never find the downloaded file.
+     */
+    suspend fun downloadFile(remotePath: String, localDir: String): String? =
+        client.downloadFile(remotePath, localDir)
+
     override suspend fun fileGlob(pattern: String, basePath: String, depth: Int?): Result<List<String>> =
         Result.success(client.fileGlob(pattern, basePath, depth))
 

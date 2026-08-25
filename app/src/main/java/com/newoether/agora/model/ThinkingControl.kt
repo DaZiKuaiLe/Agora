@@ -7,16 +7,34 @@ object ThinkingLevels {
     val effortValues = listOf("minimal", "low", "medium", "high", "xhigh", "max")
     val budgetPresets = listOf(1024, 2048, 4096, 8192, 16384, 32768)
 
-    fun effortRangeForProvider(providerName: String?): IntRange = when (providerName?.lowercase()) {
-        "openai", "open router" -> 0..4   // Max clamps to xHigh
-        "google", "gemini" -> 0..3         // xHigh/Max clamp to High
-        else -> 0..5                        // full range (Anthropic, unknown)
+    /** The provider's supported effort tiers, in display order. Stored values are a subset of
+     *  the abstract [effortValues], chosen so provider mapping functions round-trip cleanly. */
+    fun effortsForProvider(providerName: String?): List<String> = when (providerName?.lowercase()) {
+        "deepseek" -> listOf("low", "high", "max")
+        "openai", "open router" -> listOf("minimal", "low", "medium", "high", "xhigh")
+        "google", "gemini" -> listOf("minimal", "low", "medium", "high")
+        else -> effortValues
     }
+
+    fun effortRangeForProvider(providerName: String?): IntRange =
+        0..effortsForProvider(providerName).lastIndex
 
     fun effortForIndex(index: Int): String = effortValues.getOrElse(index) { "medium" }
 
+    fun effortForIndexInProvider(providerName: String?, index: Int): String =
+        effortsForProvider(providerName).getOrElse(index) { DefaultEffort }
+
     fun indexForEffort(effort: String): Int =
         effortValues.indexOf(normalizeEffort(effort)).coerceAtLeast(0)
+
+    fun indexForEffortInProvider(providerName: String?, effort: String): Int =
+        effortsForProvider(providerName).indexOf(normalizeEffort(effort)).coerceAtLeast(0)
+
+    /** The default effort for a provider when the user has not chosen one. */
+    fun defaultEffortForProvider(providerName: String?): String = when (providerName?.lowercase()) {
+        "deepseek" -> "high"
+        else -> "medium"
+    }
 
     fun normalize(raw: String?): String = normalizeEffortValue(raw)
 
@@ -60,6 +78,14 @@ object ThinkingLevels {
         "medium" -> "medium"
         "high", "xhigh", "max" -> "high"
         else -> "medium"
+    }
+
+    /** DeepSeek V4 accepts only low/high/max (medium/xhigh collapse to high, per its docs). */
+    fun deepseekEffort(effort: String): String = when (normalizeEffort(effort)) {
+        "none", "minimal", "low" -> "low"
+        "medium", "high", "xhigh" -> "high"
+        "max" -> "max"
+        else -> "high"
     }
 
     private fun normalizeEffort(raw: String): String = when (raw.trim().lowercase()) {

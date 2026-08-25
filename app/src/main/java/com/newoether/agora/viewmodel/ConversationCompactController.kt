@@ -32,17 +32,15 @@ internal class ConversationCompactController(
 ) {
     suspend fun automaticNeeded(
         conversationId: String,
-        contextLimit: Int,
         config: AutomaticCompactConfig,
-    ): Boolean = operation.automaticNeeded(conversationId, contextLimit, config)
+    ): Boolean = operation.automaticNeeded(conversationId, config)
 
     suspend fun startAutomaticBeforeSend(
         conversationId: String,
-        contextLimit: Int,
         config: AutomaticCompactConfig,
         state: ConversationGenerationState,
     ): CompactResult {
-        if (!operation.automaticNeeded(conversationId, contextLimit, config)) {
+        if (!operation.automaticNeeded(conversationId, config)) {
             return CompactResult.NotNeeded
         }
         val snapshot = automaticSnapshot(conversationId, config)
@@ -57,11 +55,10 @@ internal class ConversationCompactController(
 
     suspend fun startAutomaticStandard(
         conversationId: String,
-        contextLimit: Int,
         config: AutomaticCompactConfig,
         state: ConversationGenerationState,
     ): StandardCompactLaunch? {
-        if (!operation.automaticNeeded(conversationId, contextLimit, config)) return null
+        if (!operation.automaticNeeded(conversationId, config)) return null
         val snapshot = automaticSnapshot(conversationId, config)
         return launch(
             conversationId = conversationId,

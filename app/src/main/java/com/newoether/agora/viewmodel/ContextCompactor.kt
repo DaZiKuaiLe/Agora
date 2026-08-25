@@ -115,20 +115,8 @@ sealed interface CompactResult {
 internal fun interface ContextCompactOperation {
     suspend fun automaticNeeded(
         conversationId: String,
-        contextLimit: Int,
         config: AutomaticCompactConfig,
     ): Boolean
-}
-
-internal fun automaticCompactTokenThreshold(
-    contextLimit: Int,
-    thresholdPercent: Int,
-): Int {
-    val normalizedLimit = contextLimit.coerceAtLeast(1)
-    val normalizedPercent = thresholdPercent.coerceIn(50, 100)
-    return ((normalizedLimit.toLong() * normalizedPercent + 99L) / 100L)
-        .coerceIn(1L, Int.MAX_VALUE.toLong())
-        .toInt()
 }
 
 internal fun automaticCompactNeeded(
@@ -199,13 +187,12 @@ internal class ContextCompactor(
 ) : ContextCompactOperation {
     override suspend fun automaticNeeded(
         conversationId: String,
-        contextLimit: Int,
         config: AutomaticCompactConfig,
     ): Boolean =
         config.enabled && automaticCompactNeeded(
             conversations.getMessagesForConversationSnapshot(conversationId),
             conversations.restoreBranchSelections(conversationId),
-            automaticCompactTokenThreshold(contextLimit, config.thresholdPercent),
+            config.compactThreshold,
             config.request.retainLogicalMessages,
             config.generationContext.imageTranscriptionEnabled,
             config.fixedTokenCost,

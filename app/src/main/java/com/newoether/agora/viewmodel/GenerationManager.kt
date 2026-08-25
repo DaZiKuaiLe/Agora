@@ -81,8 +81,9 @@ class GenerationManager(
 
     suspend fun processImages(
         uris: List<String>,
-        sliceConfigs: Map<String, VideoSliceConfig> = emptyMap()
-    ): List<String> = imageProcessor.processImagesAndVideos(uris, sliceConfigs)
+        sliceConfigs: Map<String, VideoSliceConfig> = emptyMap(),
+        maxDimension: Int = 512,
+    ): List<String> = imageProcessor.processImagesAndVideos(uris, sliceConfigs, maxDimension)
 
     /** Semantic message search — delegates to the RAG tool provider, which owns the
      *  embedding-search logic. Kept here as the entry point used by ChatViewModel's

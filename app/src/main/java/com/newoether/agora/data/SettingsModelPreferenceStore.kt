@@ -46,6 +46,11 @@ internal class SettingsModelPreferenceStore(
         try { json.decodeFromString<Map<String, String>>(jsonStr) } catch (e: Exception) { emptyMap() }
     }
 
+    val modelGenerationSettings: Flow<Map<String, ModelGenerationSettings>> = dataStore.data.map { pref ->
+        val jsonStr = pref[MODEL_GENERATION_SETTINGS_JSON] ?: "{}"
+        try { json.decodeFromString<Map<String, ModelGenerationSettings>>(jsonStr) } catch (e: Exception) { emptyMap() }
+    }
+
     val apiKeys: Flow<List<ApiKeyEntry>> = dataStore.data.map { pref ->
         val jsonStr = com.newoether.agora.util.SecretCrypto.decrypt(pref[API_KEYS_JSON] ?: "[]")
         try { json.decodeFromString<List<ApiKeyEntry>>(jsonStr) } catch (e: Exception) { emptyList() }
@@ -270,6 +275,28 @@ internal class SettingsModelPreferenceStore(
 
     suspend fun saveModelAliases(aliases: Map<String, String>) {
         dataStore.edit { it[MODEL_ALIASES_JSON] = json.encodeToString(aliases) }
+    }
+
+    /** Stores or removes the per-model generation settings entry for [modelId]. */
+    suspend fun saveModelGenerationSetting(modelId: String, settings: ModelGenerationSettings?) {
+        dataStore.edit { prefs ->
+            val current = prefs[MODEL_GENERATION_SETTINGS_JSON] ?: "{}"
+            val map = try {
+                json.decodeFromString<MutableMap<String, ModelGenerationSettings>>(current)
+            } catch (e: Exception) {
+                mutableMapOf()
+            }
+            if (settings == null) {
+                map.remove(modelId)
+            } else {
+                map[modelId] = settings
+            }
+            if (map.isEmpty()) {
+                prefs.remove(MODEL_GENERATION_SETTINGS_JSON)
+            } else {
+                prefs[MODEL_GENERATION_SETTINGS_JSON] = json.encodeToString(map)
+            }
+        }
     }
 
     /**

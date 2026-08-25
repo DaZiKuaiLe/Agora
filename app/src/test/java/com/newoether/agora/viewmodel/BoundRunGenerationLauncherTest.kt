@@ -63,7 +63,6 @@ class BoundRunGenerationLauncherTest {
         coVerify(exactly = 1) {
             fixture.compactController.automaticNeeded(
                 conversationId = "conversation",
-                contextLimit = 4096,
                 config = fixture.snapshot.automaticCompact,
             )
         }
@@ -75,7 +74,7 @@ class BoundRunGenerationLauncherTest {
     fun automaticCompactCompletesTheAssistantRunBeforeSchedulingFollowUp() = runBlocking {
         val fixture = Fixture()
         coEvery {
-            fixture.compactController.automaticNeeded(any(), any(), any())
+            fixture.compactController.automaticNeeded(any(), any())
         } returns true
         coEvery {
             fixture.manager.generate(
@@ -237,7 +236,7 @@ class BoundRunGenerationLauncherTest {
             state.bindRun(uiToken, "run", pass = 3)
             every { manager.fixedContextTokenCost(any(), any()) } returns 0
             coEvery {
-                compactController.automaticNeeded(any(), any(), any())
+                compactController.automaticNeeded(any(), any())
             } returns false
             launcher = BoundRunGenerationLauncher(
                 conversations = conversations,

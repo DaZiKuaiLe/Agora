@@ -5,6 +5,7 @@ import com.newoether.agora.api.*
 import com.newoether.agora.util.DebugLog
 import com.newoether.agora.api.util.StreamingThinkTagParser
 import com.newoether.agora.api.util.buildToolCallId
+import com.newoether.agora.api.util.assembleText
 import com.newoether.agora.api.util.prepareMessages
 import com.newoether.agora.api.util.RequestFormatException
 import com.newoether.agora.api.util.ProviderRetryPolicy
@@ -200,7 +201,7 @@ class OllamaProvider : LlmProvider {
             // Normal message: text + images only
             entries.add(OllamaMessage(
                 role = if (msg.participant == Participant.USER) "user" else "assistant",
-                content = msg.text,
+                content = msg.assembleText(),
                 images = images?.takeIf { it.isNotEmpty() }
             ))
             entries

@@ -142,11 +142,19 @@ data class OpenAiChatRequest(
     val reasoning: OpenAiReasoning? = null,
     val plugins: List<OpenAiPlugin>? = null,
     @SerialName("service_tier") val serviceTier: String? = null,
+    /** DeepSeek V4 thinking-mode toggle. Sending disabled truly turns off the always-on
+     *  reasoning trace; otherwise even thinkingEnabled=false only hides it client-side. */
+    val thinking: OpenAiThinking? = null,
     val temperature: Float? = null,
     @SerialName("max_tokens") val maxTokens: Int? = null,
     @SerialName("top_p") val topP: Float? = null,
     @SerialName("frequency_penalty") val frequencyPenalty: Float? = null,
     @SerialName("presence_penalty") val presencePenalty: Float? = null
+)
+
+@Serializable
+data class OpenAiThinking(
+    val type: String = "enabled"
 )
 
 @Serializable

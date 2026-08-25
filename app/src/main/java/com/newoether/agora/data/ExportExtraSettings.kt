@@ -1,6 +1,5 @@
 package com.newoether.agora.data
 
-import com.newoether.agora.model.ThinkingLevels
 import com.newoether.agora.model.OpenAiServiceTiers
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
@@ -35,7 +34,6 @@ object ExportExtraSettings {
         obj["imageTranscriptionModel"]?.jsonPrimitive?.contentOrNull?.let { sm.saveImageTranscriptionModel(it) }
         obj["imageTranscriptionBatchSize"]?.jsonPrimitive?.int?.let { sm.saveImageTranscriptionBatchSize(it) }
         obj["imageTranscriptionPrompt"]?.jsonPrimitive?.contentOrNull?.let { sm.saveImageTranscriptionPrompt(it) }
-        obj["webSearchNumResults"]?.jsonPrimitive?.int?.let { sm.saveWebSearchNumResults(it) }
         obj["searchContextWindow"]?.jsonPrimitive?.int?.let { sm.saveSearchContextWindow(it) }
         obj["searchMatchLimit"]?.jsonPrimitive?.int?.let { sm.saveSearchMatchLimit(it) }
         obj["defaultTemperature"]?.jsonPrimitive?.float?.let { sm.saveDefaultTemperature(it) }
@@ -46,28 +44,10 @@ object ExportExtraSettings {
         obj["conversationSettings"]?.jsonObject?.forEach { (convId, settingsJson) ->
             if (convId !in allowedConversationIds) return@forEach
             val s = settingsJson.jsonObject
-            val legacyBudgetTokens = ThinkingLevels.legacyBudgetTokens(s["thinkingLevel"]?.jsonPrimitive?.contentOrNull)
-            val cs = ConversationSettings(
-                contextWindow = s["contextWindow"]?.jsonPrimitive?.int,
-                temperature = s["temperature"]?.jsonPrimitive?.float,
-                maxTokens = s["maxTokens"]?.jsonPrimitive?.int,
-                topP = s["topP"]?.jsonPrimitive?.float,
-                frequencyPenalty = s["frequencyPenalty"]?.jsonPrimitive?.float,
-                presencePenalty = s["presencePenalty"]?.jsonPrimitive?.float,
+            val cs = ConversationToolState(
                 codeExecutionEnabled = s["codeExecutionEnabled"]?.jsonPrimitive?.boolean,
                 googleSearchEnabled = s["googleSearchEnabled"]?.jsonPrimitive?.boolean,
                 openAiWebSearchEnabled = s["openAiWebSearchEnabled"]?.jsonPrimitive?.boolean,
-                thinkingEnabled = s["thinkingEnabled"]?.jsonPrimitive?.boolean,
-                thinkingLevel = s["thinkingLevel"]?.jsonPrimitive?.contentOrNull?.let { ThinkingLevels.normalize(it) },
-                thinkingBudgetEnabled = s["thinkingBudgetEnabled"]?.jsonPrimitive?.boolean
-                    ?: legacyBudgetTokens?.let { true },
-                thinkingBudgetTokens = s["thinkingBudgetTokens"]?.jsonPrimitive?.int ?: legacyBudgetTokens,
-                openAiServiceTierEnabled =
-                    s["openAiServiceTierEnabled"]?.jsonPrimitive?.boolean,
-                openAiServiceTier = s["openAiServiceTier"]
-                    ?.jsonPrimitive
-                    ?.contentOrNull
-                    ?.let(OpenAiServiceTiers::normalize),
                 webSearchEnabled = s["webSearchEnabled"]?.jsonPrimitive?.boolean,
                 shellEnabled = s["shellEnabled"]?.jsonPrimitive?.boolean
             )

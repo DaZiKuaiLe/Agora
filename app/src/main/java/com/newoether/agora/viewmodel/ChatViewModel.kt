@@ -14,7 +14,7 @@ import com.newoether.agora.api.ollama.*
 import com.newoether.agora.api.openai.*
 import com.newoether.agora.data.AutoBackupManager
 import com.newoether.agora.data.BuiltInPrompts
-import com.newoether.agora.data.ConversationSettings
+import com.newoether.agora.data.ConversationToolState
 import com.newoether.agora.data.DataExporter
 import com.newoether.agora.data.DataImporter
 import com.newoether.agora.data.MemoryManager
@@ -352,6 +352,9 @@ class ChatViewModel(
     val currentActiveModel: StateFlow<String> get() = selectionController.currentActiveModel
 
     fun getProviderForModel(modelId: String): String = providerRegistry.providerForModel(modelId)
+
+    /** Normalizes [modelId] to the stable key used for per-model settings. */
+    fun canonicalModelIdFor(modelId: String): String = providerRegistry.canonicalModelId(modelId)
     
 
         
@@ -616,7 +619,7 @@ class ChatViewModel(
         _pendingSystemPromptId.value = promptId
     }
 
-    private val _pendingConversationSettings = MutableStateFlow<ConversationSettings?>(null)
+    private val _pendingConversationSettings = MutableStateFlow<ConversationToolState?>(null)
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val isCompacting: StateFlow<Boolean> = currentConversationId
         .flatMapLatest { conversationId ->
@@ -634,9 +637,9 @@ class ChatViewModel(
                 }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
-    val pendingConversationSettings: StateFlow<ConversationSettings?> = _pendingConversationSettings.asStateFlow()
+    val pendingConversationSettings: StateFlow<ConversationToolState?> = _pendingConversationSettings.asStateFlow()
 
-    fun setPendingConversationSettings(settings: ConversationSettings?) {
+    fun setPendingConversationSettings(settings: ConversationToolState?) {
         _pendingConversationSettings.value = settings
     }
 
@@ -644,6 +647,7 @@ class ChatViewModel(
         MessagePayloadBuilder(
             generationManager = generationManager,
             onSnackbar = { msg -> _snackbarMessage.emit(SnackbarEvent(msg)) },
+            imageUploadMaxDimension = { settings.imageUploadMaxDimension.value },
         )
     }
 
@@ -743,11 +747,11 @@ class ChatViewModel(
         )
     }
 
-    fun updateConversationSetting(convId: String?, update: (ConversationSettings) -> ConversationSettings) {
+    fun updateConversationSetting(convId: String?, update: (ConversationToolState) -> ConversationToolState) {
         if (convId != null) {
             settings.updateConversationSettings(convId, update)
         } else {
-            val current = _pendingConversationSettings.value ?: ConversationSettings()
+            val current = _pendingConversationSettings.value ?: ConversationToolState()
             _pendingConversationSettings.value = update(current)
         }
     }

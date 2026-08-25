@@ -163,6 +163,12 @@ data class ChatMessage(
     val toolCall: ToolCallData? = null,
     val segments: List<MessageSegment>? = null,
     val attachmentMeta: AttachmentMeta? = null,
+    /**
+     * Only populated during provider projection for messages that carry local image files. Lists the
+     * on-device absolute paths (image[N]) so the model can hand them to the SFTP upload tool. Never
+     * persisted and never shown in the UI — the request builder concatenates it into the model text.
+     */
+    val imageAssetsText: String? = null,
     val retryText: String? = null,
     val runId: String? = null,
     val runSequence: Long? = null,

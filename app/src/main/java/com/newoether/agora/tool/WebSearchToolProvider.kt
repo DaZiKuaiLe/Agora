@@ -9,6 +9,7 @@ import com.newoether.agora.api.ToolParameters
 import com.newoether.agora.api.ToolProperty
 import com.newoether.agora.util.Constants
 import com.newoether.agora.data.normalizeWebSearchProvider
+import com.newoether.agora.data.WebSearchPrompts
 import com.newoether.agora.viewmodel.GenerationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -28,6 +29,102 @@ internal fun searxngSearchUrl(configuredBaseUrl: String, query: String): String 
     val baseUrl = configuredBaseUrl.ifBlank { "https://searx.be" }.trimEnd('/')
     val encodedQuery = java.net.URLEncoder.encode(query, Charsets.UTF_8.name())
     return "$baseUrl/search?q=$encodedQuery&format=json"
+}
+
+/** 一次 web_search 调用里，控制百度搜索的过滤条件（由模型运行时传入）。 */
+internal data class BaiduSearchFilter(
+    val recencyFilter: String? = null,
+    val enableVideo: Boolean? = null,
+    val enableImage: Boolean? = null,
+    val siteFilter: String? = null,
+)
+
+/** 智谱允许的引擎枚举值。模型可传任意值，落库前 clamp 到这些白名单值上。 */
+internal val ZHIPU_SEARCH_ENGINES = setOf(
+    "search_std", "search_pro", "search_pro_sogou", "search_pro_quark",
+)
+
+/** 智谱默认引擎：优先长尾/小众召回（搜狗覆盖腾讯生态与知乎内容）。 */
+internal const val DEFAULT_ZHIPU_SEARCH_ENGINE = "search_pro_sogou"
+
+/** 一次 web_search 调用里，控制智谱搜索的过滤条件（由模型运行时传入）。 */
+internal data class ZhipuSearchFilter(
+    val engine: String? = null,
+    val recencyFilter: String? = null,
+    val domainFilter: String? = null,
+    val contentSize: String? = null,
+)
+
+internal fun zhipuSearchRequestBody(
+    query: String,
+    numResults: Int,
+    filter: ZhipuSearchFilter?,
+): String {
+    val engine = filter?.engine?.takeIf(ZHIPU_SEARCH_ENGINES::contains) ?: DEFAULT_ZHIPU_SEARCH_ENGINE
+    return buildJsonObject {
+        put("search_engine", engine)
+        put("search_query", query)
+        put("count", numResults.coerceIn(1, 50))
+        // 固定跳过搜索意图识别：应用作为大模型的"数据搬运工"，意图判断交由大模型自己完成。
+        put("search_intent", false)
+        filter?.recencyFilter?.takeIf { it in setOf("oneDay", "oneWeek", "oneMonth", "oneYear", "noLimit") }?.let { recency ->
+            put("search_recency_filter", recency)
+        }
+        filter?.domainFilter?.takeIf { it.isNotBlank() }?.let { domain ->
+            put("search_domain_filter", domain)
+        }
+        filter?.contentSize?.takeIf { it in setOf("medium", "high") }?.let { size ->
+            put("content_size", size)
+        }
+    }.toString()
+}
+
+internal fun normalizeZhipuSearchResponse(
+    responseBody: String,
+    query: String,
+    numResults: Int,
+): String {
+    val root = Json.parseToJsonElement(responseBody) as? JsonObject
+    val searchResults = root?.get("search_result")?.jsonArray
+        ?: return buildJsonObject {
+            put("type", "web_search")
+            put("query", query)
+            put("error", "no_results")
+        }.toString()
+
+    val normalizedResults = buildJsonArray {
+        var added = 0
+        for (element in searchResults) {
+            if (added >= numResults.coerceIn(1, 50)) break
+            val result = element as? JsonObject ?: continue
+            val url = (result["link"] as? JsonPrimitive)?.content.orEmpty()
+            if (url.isBlank()) continue
+            add(
+                buildJsonObject {
+                    put("title", (result["title"] as? JsonPrimitive)?.content.orEmpty())
+                    put("url", url)
+                    put("description", (result["content"] as? JsonPrimitive)?.content.orEmpty())
+                    val media = (result["media"] as? JsonPrimitive)?.content.orEmpty()
+                    if (media.isNotBlank()) put("source", media)
+                    val publishDate = (result["publish_date"] as? JsonPrimitive)?.content.orEmpty()
+                    if (publishDate.isNotBlank()) put("date", publishDate)
+                }
+            )
+            added++
+        }
+    }
+    if (normalizedResults.isEmpty()) {
+        return buildJsonObject {
+            put("type", "web_search")
+            put("query", query)
+            put("error", "no_results")
+        }.toString()
+    }
+    return buildJsonObject {
+        put("type", "web_search")
+        put("query", query)
+        put("results", normalizedResults)
+    }.toString()
 }
 
 internal fun kagiSearchRequestBody(query: String, numResults: Int): String =
@@ -85,13 +182,122 @@ internal fun normalizeKagiSearchResponse(
     }.toString()
 }
 
+internal fun baiduSearchRequestBody(
+    query: String,
+    numResults: Int,
+    filter: BaiduSearchFilter?,
+): String {
+    val resourceTypeFilter = buildJsonArray {
+        add(buildJsonObject {
+            put("type", "web")
+            put("top_k", numResults.coerceIn(1, 50))
+        })
+        if (filter?.enableVideo == true) {
+            add(buildJsonObject { put("type", "video"); put("top_k", numResults.coerceIn(1, 10)) })
+        }
+        if (filter?.enableImage == true) {
+            add(buildJsonObject { put("type", "image"); put("top_k", numResults.coerceIn(1, 30)) })
+        }
+    }
+    val siteSnippet = filter?.siteFilter?.split(',')?.map { it.trim() }?.filter { it.isNotBlank() }
+    return buildJsonObject {
+        put("messages", buildJsonArray { add(buildJsonObject { put("content", query); put("role", "user") }) })
+        put("search_source", "baidu_search_v2")
+        put("resource_type_filter", resourceTypeFilter)
+        filter?.recencyFilter?.takeIf { it in setOf("week", "month", "semiyear", "year") }?.let { recency ->
+            put("search_recency_filter", recency)
+        }
+        if (!siteSnippet.isNullOrEmpty()) {
+            put(
+                "search_filter",
+                buildJsonObject {
+                    put(
+                        "match",
+                        buildJsonObject { put("site", buildJsonArray { siteSnippet.forEach { add(JsonPrimitive(it)) } }) },
+                    )
+                },
+            )
+        }
+    }.toString()
+}
+
+internal fun normalizeBaiduSearchResponse(
+    responseBody: String,
+    query: String,
+    numResults: Int,
+): String {
+    val root = Json.parseToJsonElement(responseBody) as? JsonObject
+    val references = root?.get("references")?.jsonArray
+        ?: // Some deployments return a nested `result` object instead.
+        (root?.get("result")?.jsonObject?.get("references")?.jsonArray)
+        ?: return buildJsonObject {
+            put("type", "web_search")
+            put("query", query)
+            put("error", "no_results")
+        }.toString()
+
+    val normalizedResults = buildJsonArray {
+        var added = 0
+        for (element in references) {
+            if (added >= numResults.coerceIn(1, 50)) break
+            val result = element as? JsonObject ?: continue
+            val url = (result["url"] as? JsonPrimitive)?.content.orEmpty()
+            if (url.isBlank()) continue
+            add(
+                buildJsonObject {
+                    put("title", (result["title"] as? JsonPrimitive)?.content.orEmpty())
+                    put("url", url)
+                    put(
+                        "description",
+                        (result["snippet"] as? JsonPrimitive)?.content
+                            ?: (result["content"] as? JsonPrimitive)?.content
+                            ?: "",
+                    )
+                    val date = (result["date"] as? JsonPrimitive)?.content.orEmpty()
+                    if (date.isNotBlank()) put("date", date)
+                }
+            )
+            added++
+        }
+    }
+    if (normalizedResults.isEmpty()) {
+        return buildJsonObject {
+            put("type", "web_search")
+            put("query", query)
+            put("error", "no_results")
+        }.toString()
+    }
+    return buildJsonObject {
+        put("type", "web_search")
+        put("query", query)
+        put("results", normalizedResults)
+    }.toString()
+}
+
 internal fun webSearchProviderDisplayName(provider: String): String = when (provider) {
+    "baidu" -> "Baidu Search"
+    "zhipu" -> "智谱 AI 搜索"
     "kagi" -> "Kagi"
     "serper" -> "Serper"
     "tavily" -> "Tavily"
     "searxng" -> "SearXNG"
     "duckduckgo" -> "DuckDuckGo"
     else -> "Brave Search"
+}
+
+/** Resolve the per-provider usage convention from the built-in default. */
+internal fun effectiveProviderConvention(provider: String): String =
+    WebSearchPrompts.DEFAULT_PROVIDER_CONVENTIONS[provider] ?: ""
+
+/** The per-provider parameter key set + descriptions, from the built-in default. */
+internal fun effectiveProviderParams(provider: String): Map<String, String> =
+    WebSearchPrompts.DEFAULT_PROVIDER_PARAMS[provider] ?: emptyMap()
+
+/** Infer the JSON-schema type for a web_search parameter by its name. */
+internal fun webSearchParamType(key: String): String = when (key) {
+    "num_results" -> "integer"
+    "include_video", "include_image" -> "boolean"
+    else -> "string"
 }
 
 class WebSearchToolProvider : ToolProvider {
@@ -102,25 +308,28 @@ class WebSearchToolProvider : ToolProvider {
 
     override fun definitions(ctx: GenerationContext): List<ToolDefinition> {
         if (!ctx.webSearchEnabled) return emptyList()
+        val provider = normalizeWebSearchProvider(ctx.webSearchProvider)
+        val description = WebSearchPrompts.DEFAULT_TOOL_DESCRIPTION +
+            "\n\n" + effectiveProviderConvention(provider)
+        val properties = effectiveProviderParams(provider)
+            .map { (key, desc) -> key to ToolProperty(webSearchParamType(key), desc) }
+            .toMap()
         return listOf(
             ToolDefinition(function = ToolFunction(
                 name = "web_search",
-                description = "Search the web for current information. Use this to find facts, news, or data not in your training set.",
+                description = description,
                 parameters = ToolParameters(
-                    properties = mapOf(
-                        "query" to ToolProperty("string", "The search query to execute."),
-                        "num_results" to ToolProperty("integer", "Number of results to return (1-10, default 5).")
-                    ),
+                    properties = properties,
                     required = listOf("query")
                 )
             )),
             ToolDefinition(function = ToolFunction(
                 name = "web_fetch",
-                description = "Fetch and read the full text content of a web page. Use this after web_search when you need more detail from a specific page.",
+                description = "抓取并阅读一个网页的完整文本内容。在 web_search 之后、需要某个具体页面的更详细内容时使用。",
                 parameters = ToolParameters(
                     properties = mapOf(
-                        "url" to ToolProperty("string", "The URL of the page to fetch."),
-                        "maxChars" to ToolProperty("integer", "Maximum characters of text to return (default 8000, max 100000). If the result has \"truncated\": true, call again with a larger maxChars to get more.")
+                        "url" to ToolProperty("string", "要抓取的页面 URL。"),
+                        "maxChars" to ToolProperty("integer", "返回文本的最大字符数(默认8000，最大100000)。若结果带 \"truncated\": true，可增大此值再次调用以获取更多。")
                     ),
                     required = listOf("url")
                 )
@@ -147,8 +356,29 @@ class WebSearchToolProvider : ToolProvider {
         val args = Json.decodeFromString<Map<String, kotlinx.serialization.json.JsonElement>>(argsStr)
         val query = (args["query"] as? JsonPrimitive)?.content
             ?: return buildJsonObject { put("type", "web_search"); put("error", "no_query") }.toString()
-        val numResults = ((args["num_results"] as? JsonPrimitive)?.content?.toIntOrNull() ?: ctx.webSearchNumResults).coerceIn(1, 10)
+        val numResults = ((args["num_results"] as? JsonPrimitive)?.content?.toIntOrNull() ?: 100).coerceIn(1, 100)
         val provider = normalizeWebSearchProvider(ctx.webSearchProvider)
+
+        // 由模型按业务场景传入的搜索过滤条件；未传入则用 null。只解析当前 provider 的那一套参数，
+        // 避免把另一套搜索商的参数也解析出来（与 definitions 里只暴露当前 provider 参数保持一致）。
+        val baiduFilter: BaiduSearchFilter? = if (provider == "baidu") {
+            BaiduSearchFilter(
+                recencyFilter = (args["recency_filter"] as? JsonPrimitive)?.content,
+                enableVideo = (args["include_video"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull(),
+                enableImage = (args["include_image"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull(),
+                siteFilter = (args["site_filter"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() },
+            )
+        } else null
+
+        // 由模型按业务场景传入的智谱过滤条件；未传入则用 null（默认引擎/不限时效/不限站点/默认摘要长度）。
+        val zhipuFilter: ZhipuSearchFilter? = if (provider == "zhipu") {
+            ZhipuSearchFilter(
+                engine = (args["search_engine"] as? JsonPrimitive)?.content,
+                recencyFilter = (args["search_recency_filter"] as? JsonPrimitive)?.content,
+                domainFilter = (args["search_domain_filter"] as? JsonPrimitive)?.content,
+                contentSize = (args["content_size"] as? JsonPrimitive)?.content,
+            )
+        } else null
 
         return try {
             // DuckDuckGo is a scraper, not an API — handle it separately.
@@ -231,6 +461,26 @@ class WebSearchToolProvider : ToolProvider {
                         callTimeoutMillis = Constants.NETWORK_TOOL_TIMEOUT_MS,
                     )
                 }
+                "baidu" -> HttpClient.post(
+                    "https://qianfan.baidubce.com/v2/ai_search/web_search",
+                    baiduSearchRequestBody(query, numResults, baiduFilter),
+                    mapOf(
+                        "Accept" to "application/json",
+                        "Content-Type" to "application/json",
+                        "Authorization" to "Bearer $apiKey",
+                    ),
+                    callTimeoutMillis = Constants.NETWORK_TOOL_TIMEOUT_MS,
+                )
+                "zhipu" -> HttpClient.post(
+                    "https://open.bigmodel.cn/api/paas/v4/web_search",
+                    zhipuSearchRequestBody(query, numResults, zhipuFilter),
+                    mapOf(
+                        "Accept" to "application/json",
+                        "Content-Type" to "application/json",
+                        "Authorization" to "Bearer $apiKey",
+                    ),
+                    callTimeoutMillis = Constants.NETWORK_TOOL_TIMEOUT_MS,
+                )
                 else -> HttpClient.fetchModels(
                     "https://api.search.brave.com/res/v1/web/search?q=${java.net.URLEncoder.encode(query, "UTF-8")}&count=$numResults",
                     mapOf("Accept" to "application/json", "X-Subscription-Token" to apiKey),
@@ -240,6 +490,12 @@ class WebSearchToolProvider : ToolProvider {
 
             if (provider == "kagi") {
                 return normalizeKagiSearchResponse(body, query, numResults)
+            }
+            if (provider == "baidu") {
+                return normalizeBaiduSearchResponse(body, query, numResults)
+            }
+            if (provider == "zhipu") {
+                return normalizeZhipuSearchResponse(body, query, numResults)
             }
 
             val json: Map<String, kotlinx.serialization.json.JsonElement> = Json.decodeFromString(body)

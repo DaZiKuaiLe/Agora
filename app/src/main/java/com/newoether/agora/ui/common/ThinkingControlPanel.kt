@@ -1,7 +1,6 @@
 package com.newoether.agora.ui.common
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -13,27 +12,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -45,7 +36,6 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private val BudgetToggleToSliderSpacing = 32.dp
-private val AdvancedChevronSize = 18.dp
 
 @Composable
 fun ThinkingControlPanel(
@@ -62,27 +52,26 @@ fun ThinkingControlPanel(
     providerName: String? = null,
     animateSections: Boolean = false
 ) {
-    val normalizedEffort = ThinkingLevels.normalize(level)
-    val providerRange = ThinkingLevels.effortRangeForProvider(providerName)
+    val providerTiers = ThinkingLevels.effortsForProvider(providerName)
+    val normalizedEffort = ThinkingLevels.normalize(level).let {
+        if (it in providerTiers) it else ThinkingLevels.defaultEffortForProvider(providerName)
+    }
+    val providerRange = 0..providerTiers.lastIndex
     val maxIndex = providerRange.last
-    val effortGate = remember(providerRange.first, providerRange.last) {
+    val effortGate = remember(providerName, providerRange.first, providerRange.last) {
         PersistedSliderFeedbackGate(
             initialPersisted = normalizedEffort,
             toDisplay = { persisted ->
-                ThinkingLevels.indexForEffort(persisted).coerceIn(providerRange).toFloat()
+                ThinkingLevels.indexForEffortInProvider(providerName, persisted)
+                    .coerceIn(providerRange).toFloat()
             },
         )
     }
-    LaunchedEffect(normalizedEffort, providerRange.first, providerRange.last) {
+    LaunchedEffect(normalizedEffort, providerName, providerRange.first, providerRange.last) {
         effortGate.reconcile(normalizedEffort)
     }
     val sliderPosition = effortGate.displayed
-    var showAdvanced by rememberSaveable { mutableStateOf(budgetEnabled) }
     val sliderEnabled = enabled && !budgetEnabled
-
-    LaunchedEffect(budgetEnabled) {
-        if (budgetEnabled) showAdvanced = true
-    }
 
     Column(modifier = modifier.fillMaxWidth()) {
         if (showHeader) {
@@ -111,7 +100,11 @@ fun ThinkingControlPanel(
                     )
                 }
                 Spacer(modifier = Modifier.width(16.dp))
-                Switch(checked = enabled, onCheckedChange = onEnabledChange)
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = onEnabledChange,
+                    modifier = Modifier.scale(0.7f)
+                )
             }
             Spacer(modifier = Modifier.height(32.dp))
         }
@@ -136,7 +129,7 @@ fun ThinkingControlPanel(
                         modifier = Modifier.weight(1f)
                     )
                     Text(
-                        text = effortLabel(ThinkingLevels.effortForIndex(sliderPosition.roundToInt())),
+                        text = effortLabel(ThinkingLevels.effortForIndexInProvider(providerName, sliderPosition.roundToInt())),
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Bold
@@ -154,7 +147,7 @@ fun ThinkingControlPanel(
                     onValueChangeFinished = {
                         if (sliderEnabled) {
                             val idx = sliderPosition.roundToInt().coerceIn(providerRange)
-                            val effort = ThinkingLevels.effortForIndex(idx)
+                            val effort = ThinkingLevels.effortForIndexInProvider(providerName, idx)
                             if (effort == normalizedEffort) {
                                 effortGate.settleWithoutWrite(normalizedEffort, idx.toFloat())
                             } else {
@@ -173,35 +166,67 @@ fun ThinkingControlPanel(
         }
 
         Spacer(modifier = Modifier.height(8.dp))
-        val chevronRotation by animateFloatAsState(
-            targetValue = if (showAdvanced) 180f else 0f,
-            animationSpec = if (animateSections) tween(400) else tween(0),
-            label = "advancedChevronRotation"
-        )
-        TextButton(onClick = { showAdvanced = !showAdvanced }) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(if (showAdvanced) stringResource(R.string.thinking_advanced_hide) else stringResource(R.string.advanced_settings))
-                Spacer(modifier = Modifier.width(4.dp))
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .size(AdvancedChevronSize)
-                        .rotate(chevronRotation)
+        Row(
+            modifier = Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.38f),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                painter = painterResource(id = R.drawable.neurology_24),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.thinking_use_budget),
+                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = stringResource(R.string.thinking_budget_note),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
                 )
             }
+            Spacer(modifier = Modifier.width(16.dp))
+            Switch(
+                checked = budgetEnabled,
+                onCheckedChange = if (enabled) { { checked ->
+                    if (checked) {
+                        onEnabledChange(true)
+                        if (budgetTokens < 1) {
+                            onBudgetTokensChange(ThinkingLevels.DefaultBudgetTokens)
+                        }
+                    }
+                    onBudgetEnabledChange(checked)
+                } } else { { } },
+                enabled = enabled
+            )
         }
 
-        MaybeAnimatedVisibility(visible = showAdvanced, animate = animateSections) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .alpha(if (enabled) 1f else 0.38f)
-            ) {
-                Spacer(modifier = Modifier.height(8.dp))
+        MaybeAnimatedVisibility(visible = budgetEnabled, animate = animateSections) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Spacer(modifier = Modifier.height(BudgetToggleToSliderSpacing))
+                val budgetPresets = ThinkingLevels.budgetPresets
+                val currentBudget = budgetTokens.coerceAtLeast(1)
+                val budgetGate = remember(budgetPresets) {
+                    PersistedSliderFeedbackGate(
+                        initialPersisted = currentBudget,
+                        toDisplay = { persisted ->
+                            budgetPresets.indices.minByOrNull {
+                                abs(budgetPresets[it] - persisted)
+                            }?.toFloat() ?: 1f
+                        },
+                    )
+                }
+                LaunchedEffect(currentBudget) { budgetGate.reconcile(currentBudget) }
+                val budgetSliderPos = budgetGate.displayed
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.Top
                 ) {
                     Icon(
                         painter = painterResource(id = R.drawable.neurology_24),
@@ -211,106 +236,46 @@ fun ThinkingControlPanel(
                     )
                     Spacer(modifier = Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stringResource(R.string.thinking_use_budget),
-                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = stringResource(R.string.thinking_budget_note),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Switch(
-                        checked = budgetEnabled,
-                        onCheckedChange = if (enabled) { { checked ->
-                            if (checked) {
-                                onEnabledChange(true)
-                                if (budgetTokens < 1) {
-                                    onBudgetTokensChange(ThinkingLevels.DefaultBudgetTokens)
-                                }
-                            }
-                            onBudgetEnabledChange(checked)
-                        } } else { { } },
-                        enabled = enabled
-                    )
-                }
-
-                MaybeAnimatedVisibility(visible = budgetEnabled, animate = animateSections) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Spacer(modifier = Modifier.height(BudgetToggleToSliderSpacing))
-                        val budgetPresets = ThinkingLevels.budgetPresets
-                        val currentBudget = budgetTokens.coerceAtLeast(1)
-                        val budgetGate = remember(budgetPresets) {
-                            PersistedSliderFeedbackGate(
-                                initialPersisted = currentBudget,
-                                toDisplay = { persisted ->
-                                    budgetPresets.indices.minByOrNull {
-                                        abs(budgetPresets[it] - persisted)
-                                    }?.toFloat() ?: 1f
-                                },
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = stringResource(R.string.thinking_budget_input_label),
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = stringResource(R.string.thinking_budget_tokens, budgetPresets[budgetSliderPos.roundToInt()]),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold
                             )
                         }
-                        LaunchedEffect(currentBudget) { budgetGate.reconcile(currentBudget) }
-                        val budgetSliderPos = budgetGate.displayed
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.Top
-                        ) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.neurology_24),
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(top = 2.dp)
-                            )
-                            Spacer(modifier = Modifier.width(16.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = stringResource(R.string.thinking_budget_input_label),
-                                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Text(
-                                        text = stringResource(R.string.thinking_budget_tokens, budgetPresets[budgetSliderPos.roundToInt()]),
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        fontWeight = FontWeight.Bold
-                                    )
+                        Slider(
+                            value = budgetSliderPos,
+                            onValueChange = {
+                                if (enabled) budgetGate.updateFromGesture(it)
+                            },
+                            onValueChangeFinished = {
+                                if (enabled) {
+                                    val idx = budgetSliderPos.roundToInt().coerceIn(0, budgetPresets.lastIndex)
+                                    val tokens = budgetPresets[idx]
+                                    if (tokens == currentBudget) {
+                                        budgetGate.settleWithoutWrite(
+                                            currentBudget,
+                                            idx.toFloat(),
+                                        )
+                                    } else {
+                                        budgetGate.expectPersisted(tokens, idx.toFloat())
+                                    }
+                                    onEnabledChange(true)
+                                    onBudgetTokensChange(tokens)
                                 }
-                                Slider(
-                                    value = budgetSliderPos,
-                                    onValueChange = {
-                                        if (enabled) budgetGate.updateFromGesture(it)
-                                    },
-                                    onValueChangeFinished = {
-                                        if (enabled) {
-                                            val idx = budgetSliderPos.roundToInt().coerceIn(0, budgetPresets.lastIndex)
-                                            val tokens = budgetPresets[idx]
-                                            if (tokens == currentBudget) {
-                                                budgetGate.settleWithoutWrite(
-                                                    currentBudget,
-                                                    idx.toFloat(),
-                                                )
-                                            } else {
-                                                budgetGate.expectPersisted(tokens, idx.toFloat())
-                                            }
-                                            onEnabledChange(true)
-                                            onBudgetTokensChange(tokens)
-                                        }
-                                    },
-                                    valueRange = 0f..(budgetPresets.size - 1).toFloat(),
-                                    steps = budgetPresets.size - 2,
-                                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                                    enabled = enabled
-                                )
-                            }
-                        }
+                            },
+                            valueRange = 0f..(budgetPresets.size - 1).toFloat(),
+                            steps = budgetPresets.size - 2,
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            enabled = enabled
+                        )
                     }
                 }
             }

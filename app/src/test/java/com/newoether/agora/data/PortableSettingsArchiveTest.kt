@@ -6,16 +6,6 @@ import org.junit.Test
 
 class PortableSettingsArchiveTest {
     @Test
-    fun compactThresholdImportAcceptsOnlyThePortableRange() {
-        assertEquals(50, importedContextCompactThresholdPercent(50))
-        assertEquals(90, importedContextCompactThresholdPercent(90))
-        assertEquals(100, importedContextCompactThresholdPercent(100))
-        assertEquals(null, importedContextCompactThresholdPercent(null))
-        assertEquals(null, importedContextCompactThresholdPercent(49))
-        assertEquals(null, importedContextCompactThresholdPercent(101))
-    }
-
-    @Test
     fun legacyArchiveProviderReusesExistingIdentityAndMarksRoomReferences() {
         val id = "custom-provider-00000000-0000-4000-8000-000000000001"
         val result = PortableSettingsArchive.prepareImportedCustomProviders(

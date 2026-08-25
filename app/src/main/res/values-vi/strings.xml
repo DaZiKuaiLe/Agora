@@ -234,6 +234,10 @@
     <string name="image_gen_size">Kích thước mặc định</string>
     <string name="image_gen_size_hint">1024x1024</string>
     <string name="image_gen_show_all">Hiển thị tất cả mô hình</string>
+    <string name="settings_image_upload">Tải ảnh lên</string>
+    <string name="settings_image_upload_desc">Kiểm soát việc giảm kích thước ảnh trước khi gửi</string>
+    <string name="image_upload_max_dimension">Giới hạn độ phân giải</string>
+    <string name="image_upload_max_dimension_desc">Cạnh dài nhất của ảnh tải lên. Thấp hơn = ít token hơn, ít chi tiết hơn.</string>
     <string name="tool_generate_image">Tạo hình ảnh</string>
     <string name="tool_generating_image">Đang tạo hình ảnh…</string>
     <string name="tool_generated_image">Đã tạo hình ảnh</string>
@@ -322,6 +326,8 @@
     <string name="context_window">Cửa sổ ngữ cảnh</string>
     <string name="context_window_desc">Ngữ cảnh tối đa khả dụng cho một lần tạo</string>
     <string name="context_window_default">Cửa sổ ngữ cảnh mặc định</string>
+    <string name="context_limit">Giới hạn ngữ cảnh</string>
+    <string name="compact_threshold">Ngưỡng thu gọn</string>
     <string name="context_token_budget_value">Ước tính %1$s token</string>
     <string name="context_retain">Giữ lại %1$d tin nhắn gần đây</string>
     <string name="context_visualize">Trực quan hóa ngữ cảnh bị loại bỏ</string>
@@ -392,6 +398,8 @@
     <string name="web_search_tavily">Tavily</string>
     <string name="web_search_searxng">SearXNG</string>
     <string name="web_search_duckduckgo">DuckDuckGo</string>
+    <string name="web_search_baidu">Tìm kiếm Baidu</string>
+    <string name="web_search_baidu_desc">Tìm kiếm AI Baidu Qianfan. Bao phủ tiếng Trung đáng tin cậy và kết quả cập nhật.</string>
     <string name="web_search_brave_desc">API tìm kiếm tập trung vào quyền riêng tư. Có gói miễn phí.</string>
     <string name="web_search_serper_desc">API tìm kiếm Google nhanh. 2,500 truy vấn miễn phí/tháng.</string>
     <string name="web_search_tavily_desc">API tìm kiếm tối ưu hóa cho AI. Được xây dựng cho các tác nhân LLM.</string>
@@ -404,10 +412,14 @@
     <string name="web_search_serper_key_hint">Khóa API từ serper.dev</string>
     <string name="web_search_tavily_key">Khóa API Tavily</string>
     <string name="web_search_tavily_key_hint">Khóa API từ tavily.com</string>
-    <string name="web_search_num_results">Kết quả tối đa</string>
-    <string name="web_search_num_results_desc">Số kết quả cần lấy: %1$d (1-10)</string>
+    <string name="web_search_baidu_key">Khóa API Baidu Qianfan</string>
+    <string name="web_search_baidu_key_hint">Khóa API từ qianfan.baidubce.com (bảng điều khiển V2)</string>
+
+    <string name="web_search_zhipu">Tìm kiếm AI Zhipu</string>
+    <string name="web_search_zhipu_desc">Tìm kiếm web Zhipu. Đa công cụ tìm kiếm (Sogou/Quark) với độ phủ nội dung ngách tốt.</string>
+    <string name="web_search_zhipu_key">Khóa API Zhipu</string>
+    <string name="web_search_zhipu_key_hint">Khóa API từ open.bigmodel.cn</string>
     <string name="web_search_searxng_fallback_desc">Các máy chủ công cộng thường bị giới hạn lượt truy cập. Khuyên dùng tự lưu trữ để sử dụng ổn định.</string>
-    <string name="web_search_advanced">Nâng cao</string>
     <string name="web_search_searxng_url">URL gốc SearXNG</string>
     <string name="web_search_searxng_url_hint">https://searx.be</string>
 

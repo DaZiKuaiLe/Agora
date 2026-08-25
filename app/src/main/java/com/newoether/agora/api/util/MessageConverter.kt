@@ -12,6 +12,13 @@ import com.newoether.agora.util.Constants
 import java.io.File
 import java.security.MessageDigest
 
+/**
+ * The model-facing text body of a message. Appends the transient [ChatMessage.imageAssetsText]
+ * (image[N] local-path inventory) that is only spliced in when projecting to an API request —
+ * the persisted [ChatMessage.text] itself stays clean and is never mutated by this.
+ */
+fun ChatMessage.assembleText(): String = text + (imageAssetsText ?: "")
+
 fun buildToolCallId(toolName: String, arguments: String, prefix: String = Constants.TOOL_CALL_ID_PREFIX): String {
     val digest = MessageDigest.getInstance("SHA-256")
     val input = "$toolName:$arguments"
@@ -139,8 +146,8 @@ fun convertToOpenAiMessages(
 
         // Normal message: text + images
         val parts = mutableListOf<OpenAiContentPart>()
-        if (msg.text.isNotEmpty()) {
-            parts.add(OpenAiContentPart(type = "text", text = msg.text))
+        if (msg.assembleText().isNotEmpty()) {
+            parts.add(OpenAiContentPart(type = "text", text = msg.assembleText()))
         }
 
         if (includeImages && msg.participant == Participant.USER) {

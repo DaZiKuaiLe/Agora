@@ -7,6 +7,7 @@ import com.newoether.agora.model.ChatMessage
 import com.newoether.agora.model.MessageSegment
 import com.newoether.agora.model.ThinkingLevels
 import com.newoether.agora.api.util.prepareMessages
+import com.newoether.agora.api.util.assembleText
 import com.newoether.agora.api.util.adaptToolRoundsForProvider
 import com.newoether.agora.api.util.RequestFormatException
 import com.newoether.agora.api.util.requireValidSerializedRequest
@@ -259,7 +260,7 @@ internal fun ApiCodeExecutionResult.toCodeExecutionCompletion(
 internal fun geminiModelMessageParts(message: ChatMessage): List<ApiRequestPart> {
     val segments = message.segments.orEmpty()
     if (segments.none { it.type == "tool" && it.toolName == "code_execution" }) {
-        return message.text.takeIf(String::isNotEmpty)
+        return message.assembleText().takeIf(String::isNotEmpty)
             ?.let { listOf(ApiRequestPart(text = it)) }
             .orEmpty()
     }
@@ -300,8 +301,8 @@ internal fun geminiModelMessageParts(message: ChatMessage): List<ApiRequestPart>
             }
         }
     }
-    if (!includedAnswerSegment && message.text.isNotEmpty()) {
-        parts.add(0, ApiRequestPart(text = message.text))
+    if (!includedAnswerSegment && message.assembleText().isNotEmpty()) {
+        parts.add(0, ApiRequestPart(text = message.assembleText()))
     }
     return parts
 }
@@ -501,7 +502,7 @@ class GeminiProvider(
                 geminiModelMessageParts(msg).toMutableList()
             } else {
                 mutableListOf<ApiRequestPart>().apply {
-                    if (msg.text.isNotEmpty()) add(ApiRequestPart(text = msg.text))
+                    if (msg.assembleText().isNotEmpty()) add(ApiRequestPart(text = msg.assembleText()))
                 }
             }
             if (config.includeImages && msg.participant == Participant.USER) for (imagePath in msg.images) {

@@ -3,6 +3,7 @@ package com.newoether.agora.tool
 import com.newoether.agora.api.ToolDefinition
 import com.newoether.agora.data.ShellDeviceConfig
 import com.newoether.agora.model.ToolCallData
+import com.newoether.agora.model.ToolImageAttachment
 import com.newoether.agora.sandbox.SandboxManagerFactory
 import com.newoether.agora.util.Constants
 import com.newoether.agora.viewmodel.GenerationContext
@@ -22,10 +23,14 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import java.io.File
+import android.graphics.BitmapFactory
+import java.security.MessageDigest
 
 class ShellToolProvider(
     private val sandboxFactory: SandboxManagerFactory? = null,
     private val imageStore: ToolImageStore? = null,
+    private val downloadsDir: File? = null,
 ) : ToolProvider {
 
     private val sandbox = sandboxFactory?.create()
@@ -145,6 +150,8 @@ class ShellToolProvider(
             "file_glob" -> executeFileGlob(arguments, ctx)
             "file_grep" -> executeFileGrep(arguments, ctx)
             "view_image" -> executeViewImage(arguments, ctx).text
+            "upload_file_to_server" -> executeUploadFile(arguments, ctx)
+            "download_file" -> executeDownloadFile(arguments, ctx).text
             else -> "Unknown tool: $name"
         }
     }
@@ -160,6 +167,9 @@ class ShellToolProvider(
             "view_image" -> flow {
                 emit(ToolExecutionEvent.Completed(executeViewImage(arguments, ctx)))
             }
+            "download_file" -> flow {
+                emit(ToolExecutionEvent.Completed(executeDownloadFile(arguments, ctx)))
+            }
             else -> super<ToolProvider>.executeEvents(name, arguments, ctx)
         }
     }
@@ -167,7 +177,8 @@ class ShellToolProvider(
     override fun handles(name: String): Boolean = name in setOf(
         "list_shells", "execute_shell_command",
         "list_shell_jobs", "get_shell_job", "wait_for_job", "stop_shell_job",
-        "file_read", "file_write", "file_edit", "file_glob", "file_grep", "view_image"
+        "file_read", "file_write", "file_edit", "file_glob", "file_grep", "view_image",
+        "upload_file_to_server", "download_file"
     )
 
     // ── list_shells ────────────────────────────────────────
@@ -543,6 +554,169 @@ class ShellToolProvider(
         } finally {
             backend.close()
         }
+    }
+
+    private suspend fun executeUploadFile(arguments: String, ctx: GenerationContext): String {
+        val args = parseToolArgs(arguments)
+        val localPath = arg(args, "local_path")
+        if (localPath.isBlank()) return jsonError("upload_file_to_server", "local_path is required")
+        val remotePath = arg(args, "remote_path")
+        if (remotePath.isBlank()) return jsonError("upload_file_to_server", "remote_path is required")
+        val serverName = arg(args, "server")
+
+        val backend = getBackend(serverName, ctx) as? SshBackend ?: return jsonError(
+            "upload_file_to_server",
+            "Only SSH servers support SFTP upload. Use a type=ssh server.",
+            server = serverName,
+        )
+        return try {
+            if (!confirmTarget(backend.device, "upload file: $localPath → $remotePath")) {
+                return jsonError(
+                    "upload_file_to_server",
+                    "denied_by_user: the user declined to upload this file",
+                    server = serverName,
+                )
+            }
+            val error = backend.uploadFile(localPath, remotePath)
+            if (error != null) return error
+            buildJsonObject {
+                put("type", "upload_file_to_server")
+                put("server", backend.device.name)
+                put("local_path", localPath)
+                put("remote_path", remotePath)
+                put("ok", true)
+            }.toString()
+        } finally {
+            backend.close()
+        }
+    }
+
+    private suspend fun executeDownloadFile(arguments: String, ctx: GenerationContext): ToolExecutionResult {
+        val args = parseToolArgs(arguments)
+        val remotePath = arg(args, "remote_path")
+        if (remotePath.isBlank()) {
+            return ToolExecutionResult(
+                text = jsonError("download_file", "remote_path is required"),
+                isError = true,
+            )
+        }
+        val serverName = arg(args, "server")
+        val store = imageStore
+            ?: return ToolExecutionResult(
+                text = jsonError("download_file", "Tool image storage is unavailable", server = serverName),
+                isError = true,
+            )
+        val backend = getBackend(serverName, ctx) as? SshBackend ?: return ToolExecutionResult(
+            text = jsonError(
+                "download_file",
+                "Only SSH servers support SFTP download. Use a type=ssh server.",
+                server = serverName,
+            ),
+            isError = true,
+        )
+        val targetDir = arg(args, "target_dir")
+        val baseDownload = downloadsDir?.absolutePath
+            ?: File(System.getProperty("java.io.tmpdir") ?: ".").absolutePath
+        // Force every download into the App-private tree so a model cannot scatter files
+        // elsewhere on the device. A nested path is allowed only when it stays under the base.
+        val localDir = if (targetDir.isBlank() || !File(targetDir).canonicalPath.startsWith(File(baseDownload).canonicalPath)) {
+            baseDownload
+        } else {
+            targetDir
+        }
+        return try {
+            if (!confirmTarget(backend.device, "download file: $remotePath → $localDir")) {
+                return ToolExecutionResult(
+                    text = jsonError(
+                        "download_file",
+                        "denied_by_user: the user declined to download this file",
+                        server = serverName,
+                    ),
+                    isError = true,
+                )
+            }
+            val dest = backend.downloadFile(remotePath, localDir)
+            val destFile = dest?.let { File(it) }
+            if (destFile == null || !destFile.exists()) {
+                val detail = dest?.takeIf { it.contains("failed") || it.contains("error") }
+                    ?: "SFTP download failed"
+                return ToolExecutionResult(
+                    text = jsonError("download_file", detail, server = backend.device.name),
+                    isError = true,
+                )
+            }
+            val attachment = describeDownloadedImage(destFile, remotePath)
+            if (attachment == null) {
+                // Non-image or unreadable: still return the path so the model can reference it.
+                return ToolExecutionResult(
+                    text = buildJsonObject {
+                        put("type", "download_file")
+                        put("server", backend.device.name)
+                        put("remote_path", remotePath)
+                        put("local_path", destFile.absolutePath)
+                        put("ok", true)
+                    }.toString(),
+                )
+            }
+            ToolExecutionResult(
+                text = buildJsonObject {
+                    put("type", "download_file")
+                    put("server", backend.device.name)
+                    put("remote_path", remotePath)
+                    put("local_path", attachment.path)
+                    put("mime_type", attachment.mimeType)
+                    put("size", attachment.sizeBytes)
+                    attachment.width?.let { put("width", it) }
+                    attachment.height?.let { put("height", it) }
+                    put("ok", true)
+                }.toString(),
+                images = listOf(attachment),
+                transcribeImages = true,
+            )
+        } catch (error: Exception) {
+            ToolExecutionResult(
+                text = jsonError(
+                    "download_file",
+                    error.message ?: "Failed to download file",
+                    server = backend.device.name,
+                ),
+                isError = true,
+            )
+        } finally {
+            backend.close()
+        }
+    }
+
+    private fun describeDownloadedImage(file: File, display: String): ToolImageAttachment? {
+        if (!file.exists() || file.length() <= 0L) return null
+        val mime = mimeTypeFor(file).orEmpty()
+        if (!mime.startsWith("image/")) return null
+        val bytes = runCatching { file.readBytes() }.getOrNull() ?: return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val sha = MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+        return ToolImageAttachment(
+            path = file.absolutePath,
+            mimeType = mime,
+            sizeBytes = bytes.size.toLong(),
+            width = bounds.outWidth,
+            height = bounds.outHeight,
+            sha256 = sha,
+        )
+    }
+
+    private fun mimeTypeFor(file: File): String? = when (file.extension.lowercase()) {
+        "jpg", "jpeg" -> "image/jpeg"
+        "png" -> "image/png"
+        "webp" -> "image/webp"
+        "gif" -> "image/gif"
+        "heic", "heif" -> "image/heic"
+        "avif" -> "image/avif"
+        "bmp" -> "image/bmp"
+        else -> null
     }
 
     private suspend fun executeFileRead(arguments: String, ctx: GenerationContext): String {

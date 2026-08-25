@@ -8,30 +8,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import com.newoether.agora.R
-import com.newoether.agora.data.CustomProviderConfig
-import com.newoether.agora.data.providerDisplayName
 import com.newoether.agora.ui.chat.PdfPageSelectDialog
 import com.newoether.agora.ui.chat.VideoSliceDialog
 import com.newoether.agora.ui.common.OpenAiServiceTierControlPanel
-import com.newoether.agora.ui.common.ThinkingControlPanel
 import com.newoether.agora.ui.components.DialogWindowEdgeToEdge
 import com.newoether.agora.ui.motion.MotionAwareModalBottomSheet as ModalBottomSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ChatBottomBarOverlayHost(
-    showThinkingSheet: Boolean,
-    onDismissThinkingSheet: () -> Unit,
-    thinkingEnabled: Boolean,
-    thinkingLevel: String,
-    thinkingBudgetEnabled: Boolean,
-    thinkingBudgetTokens: Int,
-    onThinkingToggle: (Boolean) -> Unit,
-    onThinkingLevelChange: (String) -> Unit,
-    onThinkingBudgetEnabledChange: (Boolean) -> Unit,
-    onThinkingBudgetTokensChange: (Int) -> Unit,
-    selectedModel: String,
-    customProviders: List<CustomProviderConfig>,
     showOpenAiServiceTierSheet: Boolean,
     openAiServiceTierAvailable: Boolean,
     onDismissOpenAiServiceTierSheet: () -> Unit,
@@ -47,38 +32,6 @@ internal fun ChatBottomBarOverlayHost(
     onPdfPreviewSelect: ((List<String>, Int) -> Unit)?,
     onInitPdfSelection: ((Set<Int>) -> Unit)?,
 ) {
-    if (showThinkingSheet) {
-        ModalBottomSheet(
-            onDismissRequest = onDismissThinkingSheet,
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
-        ) {
-            DialogWindowEdgeToEdge()
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 16.dp)
-            ) {
-                ThinkingControlPanel(
-                    enabled = thinkingEnabled,
-                    level = thinkingLevel,
-                    budgetEnabled = thinkingBudgetEnabled,
-                    budgetTokens = thinkingBudgetTokens,
-                    onEnabledChange = onThinkingToggle,
-                    onLevelChange = onThinkingLevelChange,
-                    onBudgetEnabledChange = onThinkingBudgetEnabledChange,
-                    onBudgetTokensChange = onThinkingBudgetTokensChange,
-                    providerName = providerDisplayName(
-                        com.newoether.agora.model.ModelId.parse(selectedModel).providerName,
-                        customProviders,
-                    ),
-                    animateSections = true
-                )
-                Spacer(modifier = Modifier.height(24.dp))
-            }
-        }
-    }
-
     if (showOpenAiServiceTierSheet && openAiServiceTierAvailable) {
         ModalBottomSheet(
             onDismissRequest = onDismissOpenAiServiceTierSheet,

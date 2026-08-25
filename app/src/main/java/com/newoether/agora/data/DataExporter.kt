@@ -76,7 +76,7 @@ class DataExporter(
         val selectedRunBranchesJson: String? = null,
         val draftText: String = "",
         val draftAttachments: String? = null,
-        val conversationSettings: ConversationSettings? = null,
+        val conversationSettings: ConversationToolState? = null,
     )
 
     @Serializable
@@ -375,7 +375,7 @@ class DataExporter(
         zip: ZipOutputStream,
         conversations: List<ChatEntity>,
         mediaPlan: MediaExportPlan,
-        conversationSettings: Map<String, ConversationSettings>,
+        conversationSettings: Map<String, ConversationToolState>,
     ) {
         zip.putNextEntry(ZipEntry(NativeBackupFormat.CONVERSATIONS_ENTRY))
         try {

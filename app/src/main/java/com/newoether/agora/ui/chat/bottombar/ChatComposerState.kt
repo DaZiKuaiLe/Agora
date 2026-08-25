@@ -191,6 +191,23 @@ class ChatComposerState(
         }
     }
 
+    /**
+     * Derive a stable file extension from a content MIME type so a picked image keeps a
+     * recognizable suffix (att_xxx.jpg instead of att_xxx.img). Falls back to "jpg" — the most
+     * common camera/album image — when [mimeType] is null or unknown.
+     */
+    private fun imageExtFromMime(mimeType: String?): String = when (mimeType?.lowercase()) {
+        "image/jpeg", "image/jpg" -> "jpg"
+        "image/png" -> "png"
+        "image/webp" -> "webp"
+        "image/gif" -> "gif"
+        "image/heic" -> "heic"
+        "image/heif" -> "heif"
+        "image/avif" -> "avif"
+        "image/bmp", "image/x-ms-bmp" -> "bmp"
+        else -> "jpg"
+    }
+
     /** Copy a content URI to app-private storage, returning the absolute path (or null). */
     private suspend fun copyToPrivate(uri: Uri, ext: String): String? {
         return withContext(Dispatchers.IO) {
@@ -432,7 +449,7 @@ class ChatComposerState(
                         null
                     }
                 }
-                val localPath = copyToPrivate(uriObj, "img")
+                val localPath = copyToPrivate(uriObj, imageExtFromMime(mimeType))
                 if (localPath != null) {
                     selectedAttachments = selectedAttachments.map { a ->
                         if (a.uri == uriStr) {
@@ -466,12 +483,28 @@ class ChatComposerState(
      *  page rendering, adds the rest as attachments). */
     fun onPickFiles(uris: List<Uri>, onInitPdfSelection: ((Set<Int>) -> Unit)?) {
         if (uris.isEmpty()) return
-        scope.launch {
+        // Route image/video straight to the dedicated picker pipelines so behaviour matches
+        // the gallery picker exactly (image downscaling; video slice dialog). Remaining text/PDF
+        // files go through the original FileValidator inspection below.
+        val imageUris = ArrayList<Uri>()
+        val videoUris = ArrayList<Uri>()
+        val remaining = ArrayList<Uri>()
+        for (uri in uris) {
+            val mime = FileValidator.resolveMimeType(context, uri.toString())
+            when {
+                mime?.startsWith("image/") == true -> imageUris.add(uri)
+                mime?.startsWith("video/") == true -> videoUris.add(uri)
+                else -> remaining.add(uri)
+            }
+        }
+        if (imageUris.isNotEmpty()) onPickImages(imageUris)
+        if (videoUris.isNotEmpty()) onPickVideos(videoUris)
+        if (remaining.isNotEmpty()) scope.launch {
             // SAF providers can block on MIME, metadata and page-count queries. Serialize commits
             // on Main, but perform the complete inspection batch on IO.
             attachmentInspectionMutex.withLock {
                 val inspected = withContext(Dispatchers.IO) {
-                    uris.map { uri ->
+                    remaining.map { uri ->
                         val validation = FileValidator.validate(context, uri)
                         val fileName = if (validation.valid) {
                             FileValidator.resolveFileName(context, uri)

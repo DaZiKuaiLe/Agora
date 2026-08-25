@@ -12,14 +12,8 @@ class SettingsContractsTest {
     }
 
     @Test
-    fun contextCompactRetainsNoRecentMessagesByDefault() {
-        assertEquals(0, DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT)
-    }
-
-    @Test
-    fun contextCompactThresholdDefaultsToNinetyPercent() {
-        assertEquals(90, DEFAULT_CONTEXT_COMPACT_THRESHOLD_PERCENT)
-        assertEquals(50..100, CONTEXT_COMPACT_THRESHOLD_PERCENT_RANGE)
+    fun contextCompactRetainsFiveRecentMessagesByDefault() {
+        assertEquals(5, DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT)
     }
 
     @Test
@@ -59,14 +53,15 @@ class SettingsContractsTest {
 
     @Test
     fun conversationSettingsReportsWhetherAnyOverrideExists() {
-        assertTrue(ConversationSettings().isAllNull())
-        assertFalse(ConversationSettings(openAiWebSearchEnabled = false).isAllNull())
-        assertFalse(ConversationSettings(shellEnabled = false).isAllNull())
+        assertTrue(ConversationToolState().isAllNull())
+        assertFalse(ConversationToolState(openAiWebSearchEnabled = false).isAllNull())
+        assertFalse(ConversationToolState(shellEnabled = false).isAllNull())
     }
     @Test
-    fun removedOpenAiGenericSearchProviderFallsBackToDuckDuckGo() {
-        assertEquals("duckduckgo", normalizeWebSearchProvider(" OpenAI "))
-        assertEquals("duckduckgo", normalizeWebSearchProvider(" unknown "))
+    fun unknownOrRemovedSearchProviderFallsBackToZhipu() {
+        assertEquals("zhipu", normalizeWebSearchProvider(" OpenAI "))
+        assertEquals("zhipu", normalizeWebSearchProvider(" unknown "))
+        assertEquals("zhipu", normalizeWebSearchProvider(null))
         assertEquals("kagi", normalizeWebSearchProvider(" KAGI "))
     }
 }
