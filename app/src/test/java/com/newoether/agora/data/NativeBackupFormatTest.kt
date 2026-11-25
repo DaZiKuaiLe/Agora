@@ -25,10 +25,16 @@ class NativeBackupFormatTest {
             type = "ssh",
             apiKey = "conch-secret",
             sshPassword = "ssh-secret",
+            sshPrivateKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret-key\n-----END OPENSSH PRIVATE KEY-----",
+            sshKeyPassphrase = "key-pass",
+            sshKeyLabel = "id_ed25519",
             sshHostKey = "public-host-pin",
         ).withoutSecrets()
         assertEquals("", shell.apiKey)
         assertEquals("", shell.sshPassword)
+        assertEquals("", shell.sshPrivateKey)
+        assertEquals("", shell.sshKeyPassphrase)
+        assertEquals("id_ed25519", shell.sshKeyLabel)
         assertEquals("public-host-pin", shell.sshHostKey)
 
         val mcp = McpServerConfig(
@@ -64,6 +70,8 @@ class NativeBackupFormatTest {
             Json.encodeToString(listOf(remote))
         assertFalse(portableJson.contains("conch-secret"))
         assertFalse(portableJson.contains("ssh-secret"))
+        assertFalse(portableJson.contains("secret-key"))
+        assertFalse(portableJson.contains("key-pass"))
         assertFalse(portableJson.contains("mcp-secret"))
         assertFalse(portableJson.contains("embedding-secret"))
         assertFalse(portableJson.contains("/data/user/0"))
@@ -77,6 +85,8 @@ class NativeBackupFormatTest {
                 "device-id" to ShellDeviceSecrets(
                     apiKey = "shell-key",
                     sshPassword = "shell-password",
+                    sshPrivateKey = "shell-private-key",
+                    sshKeyPassphrase = "shell-passphrase",
                 ),
             ),
             embeddingApiKeys = mapOf("embedding-id" to "embedding-key"),
@@ -88,6 +98,8 @@ class NativeBackupFormatTest {
         assertTrue(encoded.contains("\"device-id\""))
         assertTrue(encoded.contains("proxy-secret"))
         assertTrue(encoded.contains("shell-password"))
+        assertTrue(encoded.contains("shell-private-key"))
+        assertTrue(encoded.contains("shell-passphrase"))
         assertTrue(encoded.contains("embedding-key"))
         assertTrue(encoded.contains("mcp-key"))
     }

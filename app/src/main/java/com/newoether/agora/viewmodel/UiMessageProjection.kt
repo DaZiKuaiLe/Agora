@@ -106,5 +106,12 @@ internal fun MessageEntity.toUiChatMessage(
         runId = runId,
         runSequence = runSequence,
         consumedAtPass = consumedAtPass,
+        turnId = turnId,
+        compactLocked = compactLocked,
+        compactBatchId = compactBatchId,
+        compactSummary = compactSummary,
+        compactDigest = compactDigest,
+        compactDigestRev = compactDigestRev,
+        integrateText = integrateText,
     )
 }

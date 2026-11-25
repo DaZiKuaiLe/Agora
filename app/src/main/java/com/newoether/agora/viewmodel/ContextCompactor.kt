@@ -1,5 +1,6 @@
 package com.newoether.agora.viewmodel
 
+import com.newoether.agora.api.GenerationError
 import com.newoether.agora.api.util.contextWindowUsage
 import com.newoether.agora.api.util.projectGenerationStatusesForApi
 import com.newoether.agora.api.util.splitContextForCompactRetention
@@ -8,6 +9,7 @@ import com.newoether.agora.api.util.validateToolMessages
 import com.newoether.agora.data.local.MessageEntity
 import com.newoether.agora.data.repository.ConversationRepository
 import com.newoether.agora.model.ChatMessage
+import com.newoether.agora.model.ContextBudget
 import com.newoether.agora.model.Participant
 import com.newoether.agora.model.isContextCompact
 import com.newoether.agora.model.isSuccessfulContextCompact
@@ -18,6 +20,8 @@ data class CompactRequest(
     val prompt: String,
     val retainLogicalMessages: Int,
     val replaceMessageId: String? = null,
+    /** True for legacy capsule migration / explicit full recompact; false for incremental. */
+    val fullRecompact: Boolean = false,
 )
 
 /** Provider-equivalent split input without role coalescing away durable graph ids. */
@@ -85,6 +89,45 @@ internal fun buildPersistedCompactText(
     }
 }
 
+/** Compact LLM output cap is the freeze threshold (default 256K), not the working-model maxTokens. */
+internal fun compactMaxOutputTokens(freezeThreshold: Int): Int =
+    freezeThreshold.takeIf { it > 0 } ?: ContextBudget.DEFAULT_FREEZE_THRESHOLD
+
+/**
+ * Output cap and context-window overflow both mean this slice does not fit: drop the draft and
+ * retry with the first half of the candidate turns.
+ */
+internal fun compactLlmShouldShrinkSlice(error: GenerationError): Boolean {
+    if (error is GenerationError.OutputTruncated) return true
+    val haystack = when (error) {
+        is GenerationError.Api ->
+            listOfNotNull(error.code, error.type, error.message).joinToString(" ")
+        is GenerationError.Network -> error.message
+        is GenerationError.RequestFormat -> error.details
+        is GenerationError.LocalModel -> error.message
+        is GenerationError.Unknown -> error.cause.message.orEmpty()
+        else -> ""
+    }.lowercase()
+    if (haystack.isBlank()) return false
+    return COMPACT_WINDOW_OVERFLOW_MARKERS.any { it in haystack }
+}
+
+private val COMPACT_WINDOW_OVERFLOW_MARKERS = listOf(
+    "maximum context length",
+    "max context length",
+    "context_length",
+    "context length is",
+    "exceeds the context",
+    "exceeds the maximum context",
+    "prompt is too long",
+    "input is too long",
+    "input token count exceeds",
+    "reduce the length of the messages",
+    "reduce the length of the prompt",
+    "please reduce the length",
+    "too many tokens",
+)
+
 enum class CompactFailureReason {
     SELECT_MODEL,
     EMPTY_PROMPT,
@@ -97,11 +140,15 @@ enum class CompactFailureReason {
     GENERATION_NOT_STARTED,
     MESSAGE_DISAPPEARED,
     OPEN_CONVERSATION,
+    TURN_TOO_LARGE,
     GENERIC,
 }
 
 sealed interface CompactResult {
-    data class Created(val messageId: String) : CompactResult
+    data class Created(
+        val messageId: String,
+        val integrityIssues: List<DigestIntegrityIssue> = emptyList(),
+    ) : CompactResult
     data class Stopped(val messageId: String) : CompactResult
     data object NotNeeded : CompactResult
     data class Failed(
@@ -183,20 +230,10 @@ internal fun automaticCompactNeeded(
 
 /** Non-destructive context compaction. Original messages remain in the graph. */
 internal class ContextCompactor(
-    private val conversations: ConversationRepository,
+    private val batchEngine: BatchCompactEngine,
 ) : ContextCompactOperation {
     override suspend fun automaticNeeded(
         conversationId: String,
         config: AutomaticCompactConfig,
-    ): Boolean =
-        config.enabled && automaticCompactNeeded(
-            conversations.getMessagesForConversationSnapshot(conversationId),
-            conversations.restoreBranchSelections(conversationId),
-            config.compactThreshold,
-            config.request.retainLogicalMessages,
-            config.generationContext.imageTranscriptionEnabled,
-            config.fixedTokenCost,
-            config.userPrepend,
-            config.userPostpend,
-        )
+    ): Boolean = batchEngine.automaticNeeded(conversationId, config)
 }

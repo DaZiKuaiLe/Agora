@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Compress
@@ -64,6 +65,7 @@ import com.newoether.agora.ui.chat.VideoSliceDialog
 import com.newoether.agora.ui.common.LocalAgoraHaptics
 import com.newoether.agora.ui.common.OpenAiServiceTierControlPanel
 import com.newoether.agora.ui.common.openAiServiceTierShortLabel
+import com.newoether.agora.ui.files.LocalFilePickerDialog
 import com.newoether.agora.ui.motion.LocalAgoraMotionPolicy
 import com.newoether.agora.ui.motion.MotionAwareCircularProgressIndicator as CircularProgressIndicator
 import com.newoether.agora.ui.motion.MotionAwareModalBottomSheet as ModalBottomSheet
@@ -107,6 +109,7 @@ fun ChatBottomBar(
         suspend () -> Unit,
     ) -> SendAcceptance?,
     onStopGeneration: () -> Unit = {},
+    onForceStopGeneration: () -> Unit = {},
     isLoading: Boolean,
     isCompacting: Boolean = false,
     isSwitching: Boolean = false,
@@ -123,6 +126,7 @@ fun ChatBottomBar(
     openAiServiceTier: String = "auto",
     webSearchEnabled: Boolean = false,
     shellEnabled: Boolean = false,
+    askModeEnabled: Boolean = true,
     onCodeExecutionToggle: (Boolean) -> Unit = {},
     onGoogleSearchToggle: (Boolean) -> Unit = {},
     onOpenAiWebSearchToggle: (Boolean) -> Unit = {},
@@ -130,6 +134,7 @@ fun ChatBottomBar(
     onOpenAiServiceTierChange: (String) -> Unit = {},
     onWebSearchToggle: (Boolean) -> Unit = {},
     onShellToggle: (Boolean) -> Unit = {},
+    onAskModeToggle: (Boolean) -> Unit = {},
     onModelSelect: (String) -> Unit,
     onImageClick: (String) -> Unit = {},
     onAllMediaClick: ((urls: List<String>, index: Int) -> Unit)? = null,
@@ -154,15 +159,14 @@ fun ChatBottomBar(
     showShell: Boolean = true,
     onAdvancedClick: () -> Unit = {},
     compactDefaultModel: String? = null,
-    compactDefaultPrompt: String = "",
-    compactDefaultRetainCount: Int = 6,
     contextEstimatedTokens: Int = 0,
     contextTokenBudget: Int = ContextBudget.DEFAULT_TOKENS,
     canCompact: Boolean = false,
-    onCompactClick: () -> Unit = {},
+    onFullOptimizeClick: () -> Unit = {},
     queuedSends: List<QueuedSend> = emptyList(),
     onRemoveQueuedSend: (String) -> Unit = {},
     isStopping: Boolean = false,
+    isStopRequested: Boolean = false,
 ) {
     val allowSpatialTransitions = LocalAgoraMotionPolicy.current.allowSpatialTransitions
     val scrollState = rememberScrollState()
@@ -230,6 +234,7 @@ fun ChatBottomBar(
     var pendingCameraPath by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingCameraPermissionPath by rememberSaveable { mutableStateOf<String?>(null) }
     var internalCameraPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var showLocalFilePicker by rememberSaveable { mutableStateOf(false) }
     val cameraLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.TakePicture()
     ) { captured ->
@@ -314,6 +319,12 @@ fun ChatBottomBar(
         }
 
         Box(modifier = Modifier.fillMaxWidth().then(if (isExpanded) Modifier.weight(1f) else Modifier).noOpBringIntoView()) {
+            val pathRefBackground = MaterialTheme.colorScheme.secondaryContainer
+            val pathRefForeground = MaterialTheme.colorScheme.onSecondaryContainer
+            val pathRefOutputTransformation = rememberPathReferenceOutputTransformation(
+                background = pathRefBackground,
+                foreground = pathRefForeground,
+            )
             TextField(
                 state = textFieldState,
                 scrollState = scrollState,
@@ -345,7 +356,9 @@ fun ChatBottomBar(
                     disabledContainerColor = Color.Transparent,
                     cursorColor = MaterialTheme.colorScheme.primary
                 ),
-                textStyle = ChatType.input.copy(color = MaterialTheme.colorScheme.onSurface)
+                textStyle = ChatType.input.copy(color = MaterialTheme.colorScheme.onSurface),
+                inputTransformation = PathReferenceInputTransformation,
+                outputTransformation = pathRefOutputTransformation,
             )
             androidx.compose.animation.AnimatedVisibility(
                 visible = !isExpanded,
@@ -398,6 +411,11 @@ fun ChatBottomBar(
                         )
                     },
                     onFiles = { fileLauncher.launch("*/*") },
+                    onPathReference = { showLocalFilePicker = true },
+                )
+                AskModeToggle(
+                    enabled = askModeEnabled,
+                    onToggle = onAskModeToggle,
                 )
                 var activeMenu by remember { mutableStateOf<String?>(null) }
                 var lastModelDismissTime by remember { mutableLongStateOf(0L) }
@@ -427,7 +445,7 @@ fun ChatBottomBar(
                                 activeMenu = "model"
                             }
                         },
-                        modifier = Modifier.height(38.dp).widthIn(max = 160.dp).menuAnchor(type = ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled = true),
+                        modifier = Modifier.height(38.dp).widthIn(max = 120.dp).menuAnchor(type = ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled = true),
                         contentPadding = PaddingValues(8.dp)
                     ) {
                         Text(
@@ -568,8 +586,8 @@ fun ChatBottomBar(
                             Text(
                                 text = stringResource(
                                     R.string.context_usage_messages,
-                                    ContextBudget.compactLabel(contextEstimatedTokens),
-                                    ContextBudget.compactLabel(contextTokenBudget),
+                                    ContextBudget.groupedLabel(contextEstimatedTokens),
+                                    ContextBudget.groupedLabel(contextTokenBudget),
                                 ),
                                 style = MaterialTheme.typography.bodyMedium,
                             )
@@ -739,12 +757,25 @@ fun ChatBottomBar(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(Icons.Default.Compress, null, modifier = Modifier.size(CHAT_DROPDOWN_MENU_ICON_SIZE_DP.dp))
                                     Spacer(modifier = Modifier.width(12.dp))
-                                    Text(stringResource(R.string.context_compact))
+                                    Text(stringResource(R.string.context_full_optimize))
                                 }
                             },
                             enabled = canCompact && !isCompacting,
-                            onClick = { activeMenu = null; onCompactClick() },
+                            onClick = { activeMenu = null; onFullOptimizeClick() },
                         )
+                        if (isLoading || isStopping) {
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Stop, null, modifier = Modifier.size(CHAT_DROPDOWN_MENU_ICON_SIZE_DP.dp))
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Text(stringResource(R.string.force_stop_generation))
+                                    }
+                                },
+                                enabled = isLoading && !isStopping && !isCompacting,
+                                onClick = { activeMenu = null; onForceStopGeneration() },
+                            )
+                        }
                         DropdownMenuItem(
                             text = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -765,6 +796,8 @@ fun ChatBottomBar(
                 isLoading = isLoading,
                 isSwitching = isSwitching,
                 isStopping = isStopping,
+                isStopRequested = isStopRequested,
+                isCompacting = isCompacting,
                 isModelValid = isModelValid,
                 onSendMessage = onSendMessage,
                 onStopGeneration = onStopGeneration,
@@ -800,4 +833,14 @@ fun ChatBottomBar(
         onInitPdfSelection = onInitPdfSelection,
     )
 
+    if (showLocalFilePicker) {
+        LocalFilePickerDialog(
+            onPathsPicked = { paths ->
+                showLocalFilePicker = false
+                haptics.selection()
+                textFieldState.insertPathReferences(paths)
+            },
+            onDismiss = { showLocalFilePicker = false },
+        )
+    }
 }

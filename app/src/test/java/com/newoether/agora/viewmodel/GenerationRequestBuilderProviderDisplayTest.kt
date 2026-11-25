@@ -65,6 +65,7 @@ class GenerationRequestBuilderProviderDisplayTest {
         assertEquals(false, effective.webSearchEnabled)
         assertEquals(false, effective.shellEnabled)
         assertEquals(false, effective.openAiWebSearchEnabled)
+        assertEquals(true, effective.askMode)
     }
 
     @Test

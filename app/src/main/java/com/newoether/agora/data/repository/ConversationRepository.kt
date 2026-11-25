@@ -1,11 +1,16 @@
 package com.newoether.agora.data.repository
 
+import com.newoether.agora.data.ApiResponseArchive
 import com.newoether.agora.data.local.ChatDao
+import com.newoether.agora.data.local.ChatUiMessageDao
+import com.newoether.agora.data.local.CompactMessageGraphRow
+import com.newoether.agora.data.local.UiMessageGraphRow
 import com.newoether.agora.data.local.ChatEntity
 import com.newoether.agora.data.local.ConversationDraftAttachmentReference
 import com.newoether.agora.data.local.EmbeddingEntity
 import com.newoether.agora.data.local.EmbeddingModelCount
 import com.newoether.agora.data.local.EmbeddingSearchRow
+import com.newoether.agora.data.local.ExecutionMessagePreview
 import com.newoether.agora.data.local.IndexableMessage
 import com.newoether.agora.data.local.MessageAttachmentReference
 import com.newoether.agora.data.local.MessageEntity
@@ -23,14 +28,15 @@ import com.newoether.agora.model.MessageStatus
 import com.newoether.agora.model.RunEndReason
 import com.newoether.agora.model.RunStatus
 import com.newoether.agora.model.SelectedAttachment
+import com.newoether.agora.viewmodel.SendTokenCache
 import com.newoether.agora.model.citationRecords
 import com.newoether.agora.model.matchesCitationTitle
 import com.newoether.agora.util.DebugLog
+import com.newoether.agora.util.Constants
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -80,7 +86,8 @@ internal suspend fun boundedCitationTitleMatches(
 }
 
 class ConversationRepository(
-    private val chatDao: ChatDao
+    private val chatDao: ChatDao,
+    private val uiMessageDao: ChatUiMessageDao? = null,
 ) {
     private val runRecoveryMutex = Mutex()
     @Volatile private var runRecoveryComplete = false
@@ -111,6 +118,16 @@ class ConversationRepository(
     }
     // ── Conversations ─────────────────────────────────────────
 
+    private fun ChatEntity.toSendTokenCache() = SendTokenCache(
+        tokens = cachedSendTokens,
+        countedTurnId = sendTokenCountedTurnId,
+        budget = sendTokenBudget,
+        retainTurns = sendTokenRetainTurns,
+        fixedCost = sendTokenFixedCost,
+        configKey = sendTokenConfigKey,
+        prefixTokens = sendTokenPrefixTokens,
+    )
+
     private fun ChatEntity.toConversation() = ChatConversation(
         id = id, title = title, systemPromptId = systemPromptId, modelId = modelId,
         taskId = taskId, origin = origin, graduated = graduated,
@@ -126,9 +143,9 @@ class ConversationRepository(
     fun getExecutionsForTask(taskId: String): Flow<List<ChatConversation>> =
         chatDao.getExecutionsForTask(taskId).map { entities -> entities.map { it.toConversation() } }
 
-    /** Observes message-level changes for every execution belonging to [taskId]. */
-    fun observeExecutionMessagesForTask(taskId: String): Flow<List<MessageEntity>> =
-        chatDao.observeExecutionMessagesForTask(taskId)
+    /** Last visible model/error preview for each execution belonging to [taskId]. */
+    fun observeExecutionPreviewsForTask(taskId: String): Flow<List<ExecutionMessagePreview>> =
+        chatDao.observeExecutionPreviewsForTask(taskId)
 
     suspend fun getConversation(id: String): ChatEntity? =
         chatDao.getConversation(id)
@@ -166,29 +183,36 @@ class ConversationRepository(
     ): Boolean = chatDao.updateConversationTitleIfUnchanged(id, expectedTitle, newTitle) == 1
 
     suspend fun deleteConversation(id: String) {
-        val messages = chatDao.getMessagesForConversation(id).first()
+        val messageIds = chatDao.messageIdsForConversation(id)
+        val attachmentPaths = conversationAttachmentFilePaths(id)
         chatDao.deleteEmbeddingsByConversation(id)
         chatDao.deleteMessagesByConversation(id)
         chatDao.deleteConversation(id)
-        deleteMessageFiles(messages)
+        deleteUnreferencedAttachmentFiles(attachmentPaths)
+        ApiResponseArchive.delete(messageIds)
     }
 
     // ── Messages ──────────────────────────────────────────────
 
-    fun getMessagesForConversation(conversationId: String): Flow<List<MessageEntity>> =
-        chatDao.getMessagesForConversation(conversationId)
+    fun observeUiMessageGraph(conversationId: String): Flow<List<UiMessageGraphRow>> =
+        requireUiMessageDao().observeUiMessageGraph(conversationId)
 
-    fun getUiMessagesForConversation(
+    suspend fun getUiMessagesByIds(
         conversationId: String,
-        streamingMessageId: String? = null,
-    ): Flow<List<MessageEntity>> =
-        chatDao.getUiMessagesForConversation(conversationId, streamingMessageId)
+        ids: List<String>,
+    ): List<MessageEntity> {
+        if (ids.isEmpty()) return emptyList()
+        val dao = requireUiMessageDao()
+        return ids.distinct().chunked(UI_MESSAGE_ID_CHUNK).flatMap { chunk ->
+            dao.getUiMessagesByIds(conversationId, chunk)
+        }
+    }
 
-    suspend fun getMessagesForConversationSnapshot(conversationId: String): List<MessageEntity> =
-        chatDao.getMessagesForConversation(conversationId).first()
+    suspend fun getCompactMessageGraph(conversationId: String): List<CompactMessageGraphRow> =
+        requireUiMessageDao().getCompactMessageGraph(conversationId)
 
-    suspend fun getLastMessageForConversation(conversationId: String): MessageEntity? =
-        chatDao.getLastMessageForConversation(conversationId)
+    suspend fun getCompactDigest(messageId: String): String? =
+        requireUiMessageDao().getCompactDigest(messageId)
 
     suspend fun upsertMessage(entity: MessageEntity) {
         require(entity.runId.isNotBlank()) { "Message ${entity.id} has no Run" }
@@ -259,9 +283,6 @@ class ConversationRepository(
     suspend fun getRunsForConversationSnapshot(conversationId: String): List<RunEntity> =
         chatDao.getRunsForConversationSnapshot(conversationId)
 
-    suspend fun getMessagesForRuns(runIds: List<String>): List<MessageEntity> =
-        if (runIds.isEmpty()) emptyList() else chatDao.getMessagesForRuns(runIds)
-
     suspend fun deleteMessageSubtree(
         conversationId: String,
         rootMessageId: String,
@@ -307,6 +328,33 @@ class ConversationRepository(
     suspend fun updateStreamingMessageCheckpoint(message: ChatMessage): Boolean =
         chatDao.updateMessageCheckpoint(message.toStreamCheckpoint()) > 0
 
+    suspend fun patchVisibleProcessCards(conversationId: String, processId: String): Int {
+        if (conversationId.isBlank() || processId.isBlank()) return 0
+        val rows = chatDao.getVisibleModelMessagesContaining(conversationId, processId)
+        var patched = 0
+        for (row in rows) {
+            if (row.id.startsWith(Constants.TOOL_MSG_PREFIX) ||
+                row.id.startsWith(Constants.RESULT_MSG_PREFIX)
+            ) {
+                continue
+            }
+            val raw = row.toolCallJson ?: continue
+            val segments = runCatching {
+                Json.decodeFromString<List<MessageSegment>>(raw)
+            }.getOrNull() ?: continue
+            val next = segments.map(com.newoether.agora.tool.ProcessCardOverlay::apply)
+            if (next == segments) continue
+            if (chatDao.updateVisibleMessageToolCallJson(
+                    row.id,
+                    MessagePersistenceGuard.encodeSegmentsBounded(next),
+                ) == 1
+            ) {
+                patched++
+            }
+        }
+        return patched
+    }
+
     /** Atomically persists a terminal model snapshot and terminalizes its Run. */
     suspend fun finishGeneration(
         message: ChatMessage,
@@ -316,15 +364,115 @@ class ConversationRepository(
         reason: RunEndReason,
         markConversationUnread: Boolean = false,
         at: Long = System.currentTimeMillis(),
-    ): Boolean = chatDao.finishGeneration(
-        checkpoint = message.toStreamCheckpoint(),
-        conversationId = conversationId,
-        runId = runId,
-        status = status,
-        reason = reason,
-        at = at,
-        markConversationUnread = markConversationUnread,
-    )
+    ): Boolean {
+        val applied = chatDao.finishGeneration(
+            checkpoint = message.toStreamCheckpoint(),
+            conversationId = conversationId,
+            runId = runId,
+            status = status,
+            reason = reason,
+            at = at,
+            markConversationUnread = markConversationUnread,
+        )
+        if (applied && status == RunStatus.COMPLETED) {
+            val turnId = message.turnId?.takeIf { it.isNotBlank() }
+                ?: "turn_${java.util.UUID.randomUUID()}"
+            chatDao.assignTurnIdIfAbsent(message.id, turnId)
+        }
+        return applied
+    }
+
+    /** Toggle 总结式压缩锁定 when the turn is not yet in a summary batch. */
+    suspend fun setCompactLocked(messageId: String, locked: Boolean): Boolean =
+        chatDao.setCompactLockedIfUnbatched(messageId, locked) > 0
+
+    suspend fun assignTurnIdIfAbsent(messageId: String, turnId: String): Boolean =
+        chatDao.assignTurnIdIfAbsent(messageId, turnId) > 0
+
+    suspend fun attachCompactBatch(turnId: String, batchId: String, summary: String?): Int =
+        chatDao.attachCompactBatch(turnId, batchId, summary)
+
+    suspend fun clearCompactBatches(conversationId: String): Int =
+        chatDao.clearCompactBatches(conversationId)
+
+    suspend fun setCompactDigest(turnId: String, digest: String, rev: Int): Int =
+        chatDao.setCompactDigest(turnId, digest, rev)
+
+    suspend fun setIntegrateText(turnId: String, text: String): Int =
+        chatDao.setIntegrateText(turnId, text)
+
+    suspend fun setDigestBackground(
+        conversationId: String,
+        activeMemoryRev: Long,
+        promptRev: Long,
+        promptId: String?,
+    ): Int = chatDao.setDigestBackground(conversationId, activeMemoryRev, promptRev, promptId)
+
+    suspend fun setCompactFormatRev(conversationId: String, rev: Int): Int =
+        chatDao.setCompactFormatRev(conversationId, rev)
+
+    fun observeSendTokenCache(conversationId: String): Flow<SendTokenCache> =
+        chatDao.observeConversation(conversationId).map { entity ->
+            entity?.toSendTokenCache() ?: SendTokenCache()
+        }
+
+    suspend fun getSendTokenCache(conversationId: String): SendTokenCache =
+        getConversation(conversationId)?.toSendTokenCache() ?: SendTokenCache()
+
+    suspend fun conversationHasCompactArtifacts(conversationId: String): Boolean =
+        chatDao.conversationHasCompactArtifacts(conversationId)
+
+    suspend fun setTranscriptTokenTotal(conversationId: String, total: Int): Int =
+        chatDao.setTranscriptTokenTotal(conversationId, total)
+
+    suspend fun setSendTokenCache(conversationId: String, cache: SendTokenCache): Int =
+        chatDao.setSendTokenCache(
+            conversationId = conversationId,
+            tokens = cache.tokens,
+            countedTurnId = cache.countedTurnId,
+            budget = cache.budget,
+            retainTurns = cache.retainTurns,
+            fixedCost = cache.fixedCost,
+            configKey = cache.configKey,
+            prefixTokens = cache.prefixTokens,
+        )
+
+    suspend fun commitCompactResidency(
+        conversationId: String,
+        clearExistingBatches: Boolean,
+        coveredTurnIds: List<String>,
+        batchId: String,
+        digestTurnId: String?,
+        digest: String?,
+        digestRev: Int,
+        formatRev: Int?,
+        cache: SendTokenCache,
+    ): Int {
+        chatDao.commitCompactResidency(
+            conversationId = conversationId,
+            clearExistingBatches = clearExistingBatches,
+            coveredTurnIds = coveredTurnIds,
+            batchId = batchId,
+            digestTurnId = digestTurnId,
+            digest = digest,
+            digestRev = digestRev,
+            formatRev = formatRev,
+            tokens = cache.tokens,
+            countedTurnId = cache.countedTurnId,
+            budget = cache.budget,
+            retainTurns = cache.retainTurns,
+            fixedCost = cache.fixedCost,
+            configKey = cache.configKey,
+            prefixTokens = cache.prefixTokens,
+        )
+        return 1
+    }
+
+    suspend fun getMessageThoughts(messageId: String): String? =
+        chatDao.getMessageThoughts(messageId)
+
+    private fun requireUiMessageDao(): ChatUiMessageDao =
+        checkNotNull(uiMessageDao) { "UI message graph DAO is unavailable" }
 
     /** Atomically persists the final stopped snapshot(s) and terminalizes their Run. */
     suspend fun finishStoppedGeneration(
@@ -369,6 +517,13 @@ class ConversationRepository(
                 )
             )
         }
+        val visible = !id.startsWith(Constants.TOOL_MSG_PREFIX) &&
+            !id.startsWith(Constants.RESULT_MSG_PREFIX)
+        val storedSegments = if (visible) {
+            persistedSegments?.map(com.newoether.agora.tool.ProcessCardOverlay::apply)
+        } else {
+            persistedSegments
+        }
         return MessageStreamCheckpoint(
             id = id,
             text = MessagePersistenceGuard.clipText(text),
@@ -383,11 +538,14 @@ class ConversationRepository(
             reasoningTokenCount = tokenUsage?.reasoningTokenCount,
             status = status,
             thoughtTimeMs = thoughtTimeMs,
-            toolCallJson = MessagePersistenceGuard.encodeSegmentsBounded(persistedSegments),
+            toolCallJson = MessagePersistenceGuard.encodeSegmentsBounded(storedSegments),
         )
     }
 
-    suspend fun deleteMessagesByIds(ids: List<String>) = chatDao.deleteMessagesByIds(ids)
+    suspend fun deleteMessagesByIds(ids: List<String>) {
+        chatDao.deleteMessagesByIds(ids)
+        ApiResponseArchive.delete(ids)
+    }
 
     suspend fun beginRecompactContextCompact(
         replacementRun: RunEntity,
@@ -406,11 +564,41 @@ class ConversationRepository(
 
     suspend fun removeContextCompact(messageId: String): Boolean = chatDao.removeContextCompact(messageId)
 
-    suspend fun getMessagesByIds(ids: List<String>): List<MessageEntity> =
-        chatDao.getMessagesByIds(ids)
+    suspend fun getMessagesByIds(ids: List<String>): List<MessageEntity> {
+        if (ids.isEmpty()) return emptyList()
+        return ids.distinct().chunked(UI_MESSAGE_ID_CHUNK).flatMap { chunk ->
+            chatDao.getMessagesByIds(chunk)
+        }
+    }
 
-    suspend fun getSearchableMessagesByIds(ids: List<String>): List<MessageEntity> =
-        if (ids.isEmpty()) emptyList() else chatDao.getSearchableMessagesByIds(ids)
+    /** Sum of stored body characters for [ids]. Empty input is 0. Does not load message bodies. */
+    suspend fun sumMessageBodyChars(ids: List<String>): Long {
+        if (ids.isEmpty()) return 0L
+        var total = 0L
+        for (chunk in ids.distinct().chunked(UI_MESSAGE_ID_CHUNK)) {
+            total += chatDao.sumMessageBodyChars(chunk)
+        }
+        return total
+    }
+
+    suspend fun getMessage(messageId: String): MessageEntity? = chatDao.getMessage(messageId)
+
+    suspend fun getSearchableMessagesByIds(ids: List<String>): List<MessageEntity> {
+        if (ids.isEmpty()) return emptyList()
+        return ids.distinct().chunked(UI_MESSAGE_ID_CHUNK).flatMap { chunk ->
+            chatDao.getSearchableMessagesByIds(chunk)
+        }
+    }
+
+    suspend fun getMessageAttachmentReferencesByIds(
+        ids: List<String>,
+    ): List<MessageAttachmentReference> {
+        if (ids.isEmpty()) return emptyList()
+        val dao = requireUiMessageDao()
+        return ids.distinct().chunked(UI_MESSAGE_ID_CHUNK).flatMap { chunk ->
+            dao.getMessageAttachmentReferencesByIds(chunk)
+        }
+    }
 
     suspend fun isMessageSearchable(messageId: String): Boolean =
         chatDao.isMessageSearchable(messageId)
@@ -590,6 +778,19 @@ class ConversationRepository(
 
     // ── Search ────────────────────────────────────────────────
 
+    suspend fun searchMessagesInConversation(
+        conversationId: String,
+        query: String,
+        limit: Int = 10,
+    ): List<MessageEntity> {
+        if (limit <= 0 || query.isBlank() || conversationId.isBlank()) return emptyList()
+        return chatDao.searchMessagesInConversation(
+            conversationId = conversationId,
+            query = escapeLikePattern(query),
+            limit = limit,
+        )
+    }
+
     suspend fun searchMessages(query: String, limit: Int = 10): List<MessageEntity> {
         if (limit <= 0) return emptyList()
         val directMatches = chatDao.searchMessages(escapeLikePattern(query), limit)
@@ -638,6 +839,12 @@ class ConversationRepository(
     suspend fun deleteMessageFiles(messages: List<MessageEntity>) {
         deleteUnreferencedAttachmentFiles(
             messages.flatMapTo(linkedSetOf()) { it.attachmentFilePaths() }
+        )
+    }
+
+    suspend fun deleteMessageAttachmentFiles(references: List<MessageAttachmentReference>) {
+        deleteUnreferencedAttachmentFiles(
+            references.flatMapTo(linkedSetOf()) { it.attachmentFilePaths() }
         )
     }
 
@@ -710,17 +917,41 @@ class ConversationRepository(
             .forEach { path -> runCatching { java.io.File(path).delete() } }
     }
 
-    private fun MessageEntity.attachmentFilePaths(): List<String> = buildList {
-        images.mapTo(this, ::normalizeAttachmentPath)
-        attachmentMeta
-            ?.let { raw -> runCatching { Json.decodeFromString<AttachmentMeta>(raw) }.getOrNull() }
-            ?.items
-            ?.mapNotNullTo(this) { item ->
-                item.originalUri
-                    ?.takeIf { it.startsWith("file://") }
-                    ?.let(::normalizeAttachmentPath)
-            }
+    private suspend fun conversationAttachmentFilePaths(conversationId: String): Set<String> {
+        val dao = requireUiMessageDao()
+        val paths = linkedSetOf<String>()
+        var afterId: String? = null
+        while (true) {
+            val page = dao.getMessageAttachmentReferencesForConversationPage(
+                conversationId = conversationId,
+                afterId = afterId,
+                limit = ATTACHMENT_REFERENCE_PAGE_SIZE,
+            )
+            page.forEach { reference -> paths += reference.attachmentFilePaths() }
+            afterId = page.lastOrNull()?.id
+            if (page.size < ATTACHMENT_REFERENCE_PAGE_SIZE) break
+        }
+        return paths
     }
+
+    private fun MessageEntity.attachmentFilePaths(): List<String> =
+        attachmentFilePaths(images, attachmentMeta)
+
+    private fun MessageAttachmentReference.attachmentFilePaths(): List<String> =
+        attachmentFilePaths(images, attachmentMeta)
+
+    private fun attachmentFilePaths(images: List<String>, attachmentMeta: String?): List<String> =
+        buildList {
+            images.mapTo(this, ::normalizeAttachmentPath)
+            attachmentMeta
+                ?.let { raw -> runCatching { Json.decodeFromString<AttachmentMeta>(raw) }.getOrNull() }
+                ?.items
+                ?.mapNotNullTo(this) { item ->
+                    item.originalUri
+                        ?.takeIf { it.startsWith("file://") }
+                        ?.let(::normalizeAttachmentPath)
+                }
+        }
 
     private fun normalizeAttachmentPath(path: String): String {
         val raw = path.removePrefix("file://")
@@ -730,5 +961,6 @@ class ConversationRepository(
 
     private companion object {
         const val ATTACHMENT_REFERENCE_PAGE_SIZE = 128
+        const val UI_MESSAGE_ID_CHUNK = 400
     }
 }

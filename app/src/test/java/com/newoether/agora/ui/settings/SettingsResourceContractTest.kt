@@ -18,7 +18,11 @@ class SettingsResourceContractTest {
             .orEmpty()
             .filter { it.isDirectory && localeDirectoryPattern.matches(it.name) }
 
-        assertTrue("No localized resource directories found", localeDirectories.isNotEmpty())
+        assertEquals(
+            "App UI locales are English default plus Simplified Chinese only",
+            setOf("values-zh"),
+            localeDirectories.map { it.name }.toSet(),
+        )
         localeDirectories.forEach { localeDirectory ->
             val missingKeys = defaultKeys - readStringKeys(localeDirectory)
             assertTrue(

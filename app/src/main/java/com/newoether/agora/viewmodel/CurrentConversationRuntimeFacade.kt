@@ -31,6 +31,13 @@ internal class CurrentConversationRuntimeFacade(
         }
         .stateIn(scope, SharingStarted.Eagerly, false)
 
+    val cooperativeStopRequested: StateFlow<Boolean> = currentConversationId
+        .flatMapLatest { conversationId ->
+            conversationId?.let { registry.getOrCreate(it).cooperativeStopRequested }
+                ?: flowOf(false)
+        }
+        .stateIn(scope, SharingStarted.Eagerly, false)
+
     fun removeQueuedSend(queuedSendId: String) {
         val conversationId = currentConversationId.value ?: return
         val state = registry.getOrCreate(conversationId)

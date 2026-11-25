@@ -40,6 +40,9 @@ override an explicit contract.
   transaction results, and ambiguous ownership.
 - Protect user data first: never lose, duplicate, reorder, broaden-delete, or silently overwrite
   messages, queue entries, attachments, branches, or terminal output.
+- Working-context Compact uses `CompactFormat.CURRENT_REV`: a contract change forces full
+  optimize (de-detail + rewrite the single summary) before send. Product rules:
+  [context-compact-summary.md](../development-docs/context-compact-summary.md).
 
 ## 3. Concurrency and robustness invariants
 
@@ -85,7 +88,8 @@ changes, bounded persistence, and explicit stale-result rejection.
 - Compatibility logic stays narrow and read-side/transactional. New writes always obey current
   contracts.
 - Comments state ownership and invariants. Tests assert behavior, race/failure outcomes, and
-  non-mutation guarantees rather than source spelling.
+  non-mutation guarantees rather than source spelling. How to write, run, and not over-test:
+  [testing.md](../development-docs/testing.md).
 - Simpler architecture means fewer authorities and paths, not fewer safety checks.
 
 ## 5. Universal prohibited behaviors
@@ -109,11 +113,15 @@ Never:
 | Scope | Required module contract |
 |---|---|
 | Message generation, Run lifecycle, queue, tools, Compact, Regenerate, message actions/status, or Provider context | [message-generation.md](message-generation.md) |
+| Working-context Compact: one summary, retain window, `compactFormatRev`, or send-time format intercept | [context-compact-summary.md](../development-docs/context-compact-summary.md); portable mechanism: [context-compact-mechanism.md](../development-docs/context-compact-mechanism.md); context detail panel: [context-detail-panel.md](../development-docs/context-detail-panel.md) |
 | Provider structured citations, citation persistence, marker cleanup, answer/source projection, citation copy/search/import/export, or citation accessibility | [citations.md](citations.md) |
 | Embedding-cache reads, semantic conversation search, RAG ranking, or search eligibility | [semantic-search.md](semantic-search.md) |
 | Generic Web Search providers/settings/tool execution or native provider-hosted web search | [web-search.md](web-search.md) |
 | Persistent Skill files, Skill catalog prompt projection, Skill tools/settings, or Skill archive transport | [skills.md](skills.md) |
 | Application-level onboarding motion, settings category copy, or other non-message global UI behavior | [application-ui.md](application-ui.md) |
+| Unit tests: what to assert, what not to write, when to run the suite | [../development-docs/testing.md](../development-docs/testing.md) |
+| Conch leftover deletion / no new Conch jobs | [../development-docs/conch-deprecation.md](../development-docs/conch-deprecation.md) |
+| Local/remote file list, glob, grep (names, venue, no SFTP search fallback) | [../development-docs/file-list-glob-grep.md](../development-docs/file-list-glob-grep.md) |
 
 Add a module document when a user defines durable behavior for another subsystem. Each module
 document must describe current code ownership, allowed and forbidden responsibilities, concrete
@@ -126,7 +134,7 @@ Before completion:
 
 1. re-read this document and every applicable module contract;
 2. review the complete task diff against every touched invariant and prohibited behavior;
-3. run focused success, race, cancellation, stale-result, rollback, and non-mutation tests;
-4. run the project-defined full build gate after the final code change;
+3. run focused tests for the invariants you touched ([testing.md](../development-docs/testing.md));
+4. run the project-defined full build gate after the final code change (`:app:testPlayDebugUnitTest` before merge/release; compile plus `--tests` is enough while iterating);
 5. separate build/deploy evidence from unverified device UI behavior;
 6. update module documentation whenever the accepted behavior or ownership changed.

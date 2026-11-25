@@ -16,27 +16,21 @@ import com.newoether.agora.model.RunEndReason
 import com.newoether.agora.model.RunStatus
 import com.newoether.agora.sandbox.SandboxManagerFactory
 import com.newoether.agora.util.DebugLog
-import com.newoether.agora.viewmodel.AutomaticCompactContinuationRequest
-import com.newoether.agora.viewmodel.BoundRunGenerationLauncher
-import com.newoether.agora.viewmodel.BoundRunGenerationRequest
 import com.newoether.agora.viewmodel.AcceptedInputGraphWriter
-import com.newoether.agora.viewmodel.ContextCompactor
+import com.newoether.agora.viewmodel.BatchCompactEngine
 import com.newoether.agora.viewmodel.ConversationCompactController
+import com.newoether.agora.viewmodel.CompactFailureReason
+import com.newoether.agora.viewmodel.CompactResult
 import com.newoether.agora.viewmodel.ConversationTitleGenerator
 import com.newoether.agora.viewmodel.GenerationManager
 import com.newoether.agora.viewmodel.GenerationFinalizer
-import com.newoether.agora.viewmodel.GenerationTerminalSettlementController
 import com.newoether.agora.viewmodel.ConversationStateRegistry
 import com.newoether.agora.viewmodel.ConversationGenerationState
 import com.newoether.agora.viewmodel.GenerationRequestBuilder
-import com.newoether.agora.viewmodel.ToolRoundBoundaryDecision
-import com.newoether.agora.viewmodel.StandardGenerationContinuationLauncher
-import com.newoether.agora.viewmodel.StandardGenerationContinuationRequest
-import com.newoether.agora.viewmodel.automaticCompactAllowsHandoff
-import com.newoether.agora.viewmodel.launchStandardContinuationAfterGuidance
 import com.newoether.agora.viewmodel.ProviderRegistry
 import com.newoether.agora.viewmodel.RagManager
 import com.newoether.agora.viewmodel.RunFinalizationEffectCoordinator
+import com.newoether.agora.viewmodel.AllFilesAccessController
 import com.newoether.agora.viewmodel.ShellConfirmationController
 import com.newoether.agora.viewmodel.fallbackConversationTitle
 import com.newoether.agora.viewmodel.toUiChatMessage
@@ -51,7 +45,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Headless single-shot generation engine (process-scoped).
@@ -79,6 +72,7 @@ class TaskExecutionEngine(
     private val appScope: CoroutineScope,
     private val executionCoordinator: ConversationExecutionCoordinator,
     shellConfirmation: ShellConfirmationController,
+    allFilesAccess: AllFilesAccessController,
     mcpToolProvider: McpToolProvider,
     private val generationRegistry: ConversationStateRegistry,
     private val automationExecutionGate: AutomationExecutionGate = AutomationExecutionGate(),
@@ -144,38 +138,21 @@ class TaskExecutionEngine(
     private val stopFinalizer = GenerationFinalizer(convRepo, ragManager::indexMessageForRag)
     private val runFinalizationEffects = RunFinalizationEffectCoordinator()
     private val titleGenerator = ConversationTitleGenerator(convRepo, settings, providerRegistry)
-    private val contextCompactor = ContextCompactor(conversations = convRepo)
+    private val batchCompactEngine = BatchCompactEngine(
+        conversations = convRepo,
+        detailStore = com.newoether.agora.tool.DetailStore(appContext),
+        providers = providerRegistry,
+        knowledgeSource = com.newoether.agora.viewmodel.SettingsDigestKnowledgeSource(
+            conversations = convRepo,
+            settings = settings,
+            memory = memoryManager,
+        ),
+    )
     private val acceptedInputGraphWriter = AcceptedInputGraphWriter(convRepo)
-    private val terminalSettlement = GenerationTerminalSettlementController(
-        conversations = convRepo,
-        stopFinalizer = GenerationFinalizer(convRepo) { _, _ -> },
-        runFinalizationEffects = RunFinalizationEffectCoordinator(),
-        failureText = { "Generation failed" },
-        toUiMessage = { it.toUiChatMessage(appContext) },
-        onSnackbar = {},
-    )
-    private val compactBoundRunGenerationLauncher = BoundRunGenerationLauncher(
-        conversations = convRepo,
-        generationManagerProvider = { generationManager },
-        automaticCompactNeeded = contextCompactor::automaticNeeded,
-        terminalSettlement = terminalSettlement,
-        toUiMessage = { it.toUiChatMessage(appContext) },
-    )
-    private val compactContinuationLauncher = StandardGenerationContinuationLauncher(
-        conversations = convRepo,
-        executionCoordinator = executionCoordinator,
-        terminalSettlement = terminalSettlement,
-        boundRunGenerationLauncher = { compactBoundRunGenerationLauncher },
-        toUiMessage = { it.toUiChatMessage(appContext) },
-        isConversationOpen = { false },
-        projectGraph = { _, _, _, _ -> },
-    )
     private val compactController = ConversationCompactController(
-        conversations = convRepo,
-        operation = contextCompactor,
+        batchEngine = batchCompactEngine,
         requestBuilder = null,
-        generationManagerProvider = { generationManager },
-        continuationLauncher = { compactContinuationLauncher },
+        appContext = appContext,
     )
 
     private suspend fun settleStopEffect(
@@ -191,100 +168,6 @@ class TaskExecutionEngine(
             val result = state.finishStopFinalization(completion)
             if (result.accepted && completion.success) state.clearStoppedOverlay()
         }.join()
-    }
-
-    private data class StandardCompactContinuationResult(
-        val modelMessageId: String?,
-        val aborted: Boolean = false,
-    )
-
-    /**
-     * Runs every post-tool boundary as ordinary generations: terminal Assistant -> Compact Run ->
-     * fresh Assistant Run. No provider stream, Assistant row, or Run identity is resumed.
-     */
-    private suspend fun continueThroughStandardCompactGenerations(
-        initialRequest: AutomaticCompactContinuationRequest,
-        state: ConversationGenerationState,
-    ): StandardCompactContinuationResult {
-        val pendingRequest = AtomicReference<AutomaticCompactContinuationRequest?>()
-        lateinit var boundLauncher: BoundRunGenerationLauncher
-        val continuationLauncher = StandardGenerationContinuationLauncher(
-            conversations = convRepo,
-            executionCoordinator = executionCoordinator,
-            terminalSettlement = terminalSettlement,
-            boundRunGenerationLauncher = { boundLauncher },
-            toUiMessage = { it.toUiChatMessage(appContext) },
-            isConversationOpen = { false },
-            projectGraph = { _, _, _, _ -> },
-        )
-        boundLauncher = BoundRunGenerationLauncher(
-            conversations = convRepo,
-            generationManagerProvider = { generationManager },
-            automaticCompactNeeded = contextCompactor::automaticNeeded,
-            terminalSettlement = terminalSettlement,
-            toUiMessage = { it.toUiChatMessage(appContext) },
-            onAutomaticCompactContinuation = { request, generationState ->
-                generationState.deferNextQueueDrain()
-                check(pendingRequest.compareAndSet(null, request)) {
-                    "A standard generation produced overlapping continuation requests"
-                }
-            },
-        )
-
-        var request: AutomaticCompactContinuationRequest? = initialRequest
-        var lastModelMessageId: String? = null
-        while (request != null) {
-            val current = request
-            val guidanceClaimRevision = state.guidanceClaimRevision()
-            val compactLaunch = compactController.startAutomaticStandard(
-                conversationId = current.generationRequest.conversationId,
-                config = current.config,
-                state = state,
-            ) ?: return StandardCompactContinuationResult(lastModelMessageId, aborted = true)
-            try {
-                compactLaunch.job.join()
-            } catch (cancelled: CancellationException) {
-                withContext(NonCancellable) {
-                    compactLaunch.job.cancel(cancelled)
-                    compactLaunch.job.join()
-                }
-                throw cancelled
-            }
-            val compactMessageId = compactLaunch.messageId
-            val compactStatus = convRepo
-                .getMessagesForConversationSnapshot(current.generationRequest.conversationId)
-                .find { it.id == compactMessageId }
-                ?.status
-            if (!automaticCompactAllowsHandoff(compactStatus)) {
-                return StandardCompactContinuationResult(lastModelMessageId, aborted = true)
-            }
-            val launch = launchStandardContinuationAfterGuidance(
-                state = state,
-                guidanceClaimRevision = guidanceClaimRevision,
-            ) {
-                pendingRequest.set(null)
-                continuationLauncher.launch(
-                    request = StandardGenerationContinuationRequest(
-                        conversationId = current.generationRequest.conversationId,
-                        parentMessageId = compactMessageId,
-                        snapshot = current.generationRequest.snapshot,
-                        alreadyHoldsConversationLock = true,
-                    ),
-                    state = state,
-                )
-            } ?: return StandardCompactContinuationResult(lastModelMessageId)
-            launch.job.join()
-            state.awaitSendAvailable()
-            val continuationMessage = convRepo.getMessagesForConversationSnapshot(
-                current.generationRequest.conversationId,
-            ).find { it.id == launch.modelMessageId }
-            if (continuationMessage?.status == MessageStatus.STOPPED) {
-                return StandardCompactContinuationResult(lastModelMessageId, aborted = true)
-            }
-            if (continuationMessage != null) lastModelMessageId = launch.modelMessageId
-            request = pendingRequest.getAndSet(null)
-        }
-        return StandardCompactContinuationResult(lastModelMessageId)
     }
 
     /**
@@ -328,6 +211,8 @@ class TaskExecutionEngine(
         // Foreground Task/Loop executions share the exact same prompt and session trust state as
         // Chat. ShellConfirmationController itself fails fast when no Activity is visible.
         it.onConfirmShellCommand = shellConfirmation::confirm
+        it.onRequestAllFilesAccess = allFilesAccess::request
+        it.onSshShellDetected = settings::rememberSshDetectedShell
     }
 
     /**
@@ -484,40 +369,76 @@ class TaskExecutionEngine(
                 fixedTokenCost = fixedTokenCost,
             )
 
-            // Pre-send Compact is an isolated standard generation. Only a fresh durable SUCCESS
-            // may hand off to the ordinary direct Send; every launch/status anomaly stops here.
+            if (compactController.compactFormatStale(conversationId)) {
+                when (
+                    val recompact = compactController.startFullRecompactBeforeSend(
+                        conversationId = conversationId,
+                        config = automaticCompactConfig,
+                    )
+                ) {
+                    is CompactResult.Failed -> {
+                        return Result.Failure(
+                            recompact.externalDetail?.takeIf(String::isNotBlank)
+                                ?: "Full context recompact did not complete successfully",
+                        )
+                    }
+                    is CompactResult.Stopped -> {
+                        return Result.Failure("Full context recompact did not complete successfully")
+                    }
+                    CompactResult.NotNeeded,
+                    is CompactResult.Created -> Unit
+                }
+            }
+
+            if (compactController.digestKnowledgeStale(conversationId)) {
+                when (
+                    val digest = compactController.refreshConversationDigest(
+                        conversationId = conversationId,
+                        config = automaticCompactConfig,
+                    )
+                ) {
+                    is CompactResult.Failed -> {
+                        return Result.Failure(
+                            digest.externalDetail?.takeIf(String::isNotBlank)
+                                ?: "Conversation summary update did not complete successfully",
+                        )
+                    }
+                    is CompactResult.Stopped -> {
+                        return Result.Failure("Conversation summary update did not complete successfully")
+                    }
+                    CompactResult.NotNeeded,
+                    is CompactResult.Created -> Unit
+                }
+            }
+
+            // Pre-send Compact: formal summary batches when over threshold (no capsule message).
             val preCompactNeeded = compactController.automaticNeeded(
                 conversationId = conversationId,
                 config = automaticCompactConfig,
             )
-            val preCompactLaunch = if (preCompactNeeded) {
-                compactController.startAutomaticStandard(
-                    conversationId = conversationId,
-                    config = automaticCompactConfig,
-                    state = generationState,
-                ) ?: return Result.Failure("Compact generation did not start")
-            } else {
-                null
-            }
-            try {
-                preCompactLaunch?.job?.join()
-            } catch (cancelled: CancellationException) {
-                withContext(NonCancellable) {
-                    preCompactLaunch?.job?.cancel(cancelled)
-                    preCompactLaunch?.job?.join()
-                }
-                throw cancelled
-            }
-            val preCompactMessageId = preCompactLaunch?.messageId
-            if (preCompactMessageId != null) {
-                val preCompactMessage = convRepo
-                    .getMessagesForConversationSnapshot(conversationId)
-                    .find { it.id == preCompactMessageId }
-                if (!automaticCompactAllowsHandoff(preCompactMessage?.status)) {
-                    return Result.Failure(
-                        preCompactMessage?.text?.takeIf(String::isNotBlank)
-                            ?: "Compact generation did not complete successfully",
+            if (preCompactNeeded) {
+                when (
+                    val preCompact = compactController.startAutomaticBeforeSend(
+                        conversationId = conversationId,
+                        config = automaticCompactConfig,
+                        state = generationState,
                     )
+                ) {
+                    is CompactResult.Failed -> {
+                        return Result.Failure(
+                            preCompact.externalDetail?.takeIf(String::isNotBlank)
+                                ?: if (preCompact.reason == CompactFailureReason.TURN_TOO_LARGE) {
+                                    "A conversation turn is too large to compact; residency was not written"
+                                } else {
+                                    "Compact generation did not complete successfully"
+                                },
+                        )
+                    }
+                    is CompactResult.Stopped -> {
+                        return Result.Failure("Compact generation did not complete successfully")
+                    }
+                    CompactResult.NotNeeded,
+                    is CompactResult.Created -> Unit
                 }
             }
 
@@ -592,7 +513,7 @@ class TaskExecutionEngine(
             generationState.streamUpdate(uiToken, placeholder)
 
             val baseCallbacks = generationState.callbacksFor(uiToken, persistToken)
-            val generationResult = withContext(ownerJob) {
+            withContext(ownerJob) {
                 generationManager.generate(
                 conversationId = conversationId,
                 modelMessageId = modelMessageId,
@@ -610,55 +531,15 @@ class TaskExecutionEngine(
                         lastStreamed = message
                         baseCallbacks.onStreamUpdate(message)
                     },
-                    onToolRoundPersisted = {
-                        if (
-                            contextCompactor.automaticNeeded(
-                                conversationId = conversationId,
-                                config = automaticCompactConfig,
-                            )
-                        ) {
-                            ToolRoundBoundaryDecision.CompleteForFollowUp
-                        } else {
-                            ToolRoundBoundaryDecision.Continue
-                        }
-                    },
                 ),
                 streamScope = generationState.streamScope,
                 )
             }
-            val boundaryParentId = generationResult.followUpParentMessageId
-            if (boundaryParentId != null) generationState.deferNextQueueDrain()
             ownerJob.complete()
             ownerJob.join()
             generationState.awaitSendAvailable()
 
-            if (boundaryParentId != null) {
-                val continuationResult = continueThroughStandardCompactGenerations(
-                    initialRequest = AutomaticCompactContinuationRequest(
-                        generationRequest = BoundRunGenerationRequest(
-                            conversationId = conversationId,
-                            modelMessageId = modelMessageId,
-                            startTime = startTime,
-                            snapshot = generationSnapshot,
-                            uiToken = uiToken,
-                            persistId = persistToken,
-                            runId = runId,
-                            pass = 0,
-                            callerTag = "automation",
-                        ),
-                        parentMessageId = boundaryParentId,
-                        config = automaticCompactConfig,
-                    ),
-                    state = generationState,
-                )
-                if (continuationResult.aborted) {
-                    return Result.Failure("Compact generation did not complete successfully")
-                }
-                continuationResult.modelMessageId?.let { finalModelMessageId = it }
-            }
-
-            val finalMsg = convRepo.getMessagesForConversationSnapshot(conversationId)
-                .find { it.id == finalModelMessageId }
+            val finalMsg = convRepo.getMessage(finalModelMessageId)
             if (finalMsg != null && finalMsg.status == MessageStatus.SUCCESS) {
                 Result.Success(finalModelMessageId, finalMsg.text)
             } else {

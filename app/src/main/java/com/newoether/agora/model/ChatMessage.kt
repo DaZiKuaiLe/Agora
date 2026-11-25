@@ -55,6 +55,12 @@ data class MessageSegment(
     val durationMs: Long? = null,
     /** Durable UI lifecycle for tool segments. Null keeps old rows backward-compatible. */
     val toolState: String? = null,
+    /** Wall clock when this tool call began executing. Used for wait_ms countdown. */
+    val toolStartedAtMs: Long? = null,
+    /** SSH session connect duration. Null until the handshake finishes. */
+    val toolConnectMs: Long? = null,
+    /** Work duration after connect (or the whole call for non-SSH tools). Null until that work ends. */
+    val toolExecMs: Long? = null,
     /** Bounded, display-only live output. The final model-facing result remains [toolResult]. */
     val toolProgress: String? = null,
     /** Resolved execution target for tool UI. Kept separate from lifecycle and output text. */
@@ -173,6 +179,13 @@ data class ChatMessage(
     val runId: String? = null,
     val runSequence: Long? = null,
     val consumedAtPass: Int? = null,
+    val turnId: String? = null,
+    val compactLocked: Boolean = false,
+    val compactBatchId: String? = null,
+    val compactSummary: String? = null,
+    val compactDigest: String? = null,
+    val compactDigestRev: Int = 0,
+    val integrateText: String? = null,
 )
 
 @Immutable
@@ -193,6 +206,12 @@ fun ChatMessage.isContextCompact(): Boolean =
 
 fun ChatMessage.isSuccessfulContextCompact(): Boolean =
     isContextCompact() && status == MessageStatus.SUCCESS
+
+fun ChatMessage.isProcessCompletionNotice(): Boolean =
+    id.isProcessCompletionNoticeId()
+
+fun String.isProcessCompletionNoticeId(): Boolean =
+    startsWith(com.newoether.agora.util.Constants.PROCESS_NOTICE_MSG_PREFIX)
 
 @Immutable
 data class StableMessageList(val list: List<ChatMessage> = emptyList())

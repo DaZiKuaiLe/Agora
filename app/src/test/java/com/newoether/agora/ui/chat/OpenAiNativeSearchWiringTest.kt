@@ -48,9 +48,9 @@ class OpenAiNativeSearchWiringTest {
             root,
             "com/newoether/agora/viewmodel/GenerationContracts.kt",
         ).readText()
-        val compactor = File(
+        val batchEngine = File(
             root,
-            "com/newoether/agora/viewmodel/ContextCompactor.kt",
+            "com/newoether/agora/viewmodel/BatchCompactEngine.kt",
         ).readText()
         val compactController = File(
             root,
@@ -76,12 +76,12 @@ class OpenAiNativeSearchWiringTest {
         assertTrue("AutomaticCompactConfig must carry the absolute threshold", "val compactThreshold" in contracts)
         assertTrue("AutomaticCompactConfig must carry Responses API", "val responsesApiEnabled" in contracts)
         assertTrue(
-            "ContextCompactor must apply the absolute threshold",
-            "config.compactThreshold" in compactor,
+            "Batch compact must apply the absolute threshold",
+            "config.compactThreshold" in batchEngine,
         )
         assertTrue(
-            "Compact must delegate admission to the ordinary continuation launcher",
-            "continuationLauncher().launch(" in compactController,
+            "Compact must run formal summary batches",
+            "ensureFormalBatches(" in compactController,
         )
         assertTrue(
             "ordinary continuation must own the bound generation launch",
@@ -89,7 +89,7 @@ class OpenAiNativeSearchWiringTest {
         )
         assertTrue(
             "the ordinary GenerationManager must own provider execution",
-            "val result = generationManager.generate(" in boundLauncher,
+            "generationManager.generate(" in boundLauncher,
         )
     }
 

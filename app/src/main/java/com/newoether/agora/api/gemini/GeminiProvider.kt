@@ -647,7 +647,12 @@ class GeminiProvider(
             while (attempt < maxAttempts && !done) {
                 attempt++
                 val handle = try {
-                    HttpClient.streamPost(finalUrlString, requestJson, headers)
+                    HttpClient.streamPost(
+                        finalUrlString,
+                        requestJson,
+                        headers,
+                        responseCapture = config.apiResponseCapture,
+                    )
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -844,6 +849,7 @@ class GeminiProvider(
                             emit(StreamEvent.Retrying(attempt, ProviderRetryPolicy.MAX_RETRIES))
                             delay(ProviderRetryPolicy.delayMillis(attempt))
                         } else {
+                            emit(StreamEvent.Completion(termination.stopReason))
                             termination.toError(name)?.let { emit(StreamEvent.Error(it)) }
                             done = true
                         }

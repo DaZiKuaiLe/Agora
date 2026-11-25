@@ -10,6 +10,9 @@ import com.newoether.agora.ui.chat.message.ContextCompactPillPresentation
 import com.newoether.agora.ui.chat.message.SegmentSheetBackAction
 import com.newoether.agora.ui.chat.message.contextCompactPillPresentation
 import com.newoether.agora.ui.chat.message.segmentSheetBackAction
+import com.newoether.agora.ui.chat.message.thoughtDetailChunks
+import com.newoether.agora.ui.chat.message.usesChunkedThoughtDetail
+import com.newoether.agora.ui.chat.message.usesPlainThoughtDetail
 import com.newoether.agora.ui.chat.message.usesVirtualizedSegmentDetail
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -55,25 +58,111 @@ class CompactMessagePresentationTest {
     }
 
     @Test
-    fun historicalTerminalThoughtCanUseTheVirtualizedDetailLoader() {
-        assertTrue(
-            usesVirtualizedSegmentDetail(
-                selectedSegmentCount = 1,
-                segmentType = "thought",
-                segmentContentIsBlank = false,
-                isStreaming = false,
-                hasFooter = false,
+    fun processCompletionNoticeIsARealUserTurnBoundary() {
+        val notice = message("bgproc_exit", Participant.USER).copy(
+            text = "【系统提示】\nprocess: 后台进程已结束\n\noutput:\ndump",
+        )
+        assertTrue(MessageGenerationBoundaryResolver.isRealUser(notice))
+        val turns = buildMessageListTurns(
+            listOf(
+                message("user", Participant.USER),
+                message("assistant", Participant.MODEL),
+                notice,
+                message("follow-up", Participant.MODEL),
             ),
         )
-        assertFalse(
-            usesVirtualizedSegmentDetail(
-                selectedSegmentCount = 1,
-                segmentType = "thought",
-                segmentContentIsBlank = false,
-                isStreaming = false,
-                hasFooter = true,
-            ),
+        assertEquals(2, turns.size)
+        assertEquals(listOf("user", "assistant"), turns[0].messages.map { it.id })
+        assertEquals(listOf("bgproc_exit", "follow-up"), turns[1].messages.map { it.id })
+    }
+
+    @Test
+    fun thoughtDetailChunksStayPrefixStable() {
+        val prefix = buildString { repeat(80) { append("段落$it\n") } }
+        val longer = prefix + "续写更多思考"
+        val prefixChunks = thoughtDetailChunks(prefix, chunkCodePoints = 40)
+        val longerChunks = thoughtDetailChunks(longer, chunkCodePoints = 40)
+        assertEquals(
+            prefixChunks.dropLast(1),
+            longerChunks.take((prefixChunks.size - 1).coerceAtLeast(0)),
         )
+        assertEquals(listOf("短"), thoughtDetailChunks("短", 40))
+        assertTrue(thoughtDetailChunks("", 40).isEmpty())
+        val first = thoughtDetailChunks(prefix, chunkCodePoints = 40).first()
+        assertEquals(first, thoughtDetailChunks(prefix + "TAIL", chunkCodePoints = 40).first())
+    }
+
+    @Test
+    fun thoughtDetailStaysOffMarkdownLoaders() {
+        data class Case(
+            val name: String,
+            val type: String,
+            val streaming: Boolean,
+            val footer: Boolean,
+            val virtualized: Boolean,
+            val plainThought: Boolean,
+            val chunkedThought: Boolean = false,
+            val hasDirectMarkdown: Boolean = false,
+        )
+        listOf(
+            Case(
+                "historical thought is plain",
+                "thought",
+                streaming = false,
+                footer = false,
+                virtualized = false,
+                plainThought = true,
+                chunkedThought = true,
+            ),
+            Case(
+                "streaming thought is plain",
+                "thought",
+                streaming = true,
+                footer = false,
+                virtualized = false,
+                plainThought = true,
+                chunkedThought = true,
+            ),
+            Case(
+                "compact preview stays markdown",
+                "thought",
+                streaming = false,
+                footer = false,
+                virtualized = false,
+                plainThought = false,
+                hasDirectMarkdown = true,
+            ),
+            Case(
+                "historical transcription can virtualize",
+                "transcription",
+                streaming = false,
+                footer = false,
+                virtualized = true,
+                plainThought = false,
+            ),
+        ).forEach { case ->
+            assertEquals(
+                case.name,
+                case.virtualized,
+                usesVirtualizedSegmentDetail(
+                    selectedSegmentCount = 1,
+                    segmentType = case.type,
+                    segmentContentIsBlank = false,
+                    isStreaming = case.streaming,
+                    hasFooter = case.footer,
+                ),
+            )
+            assertEquals(
+                case.name,
+                case.plainThought,
+                usesPlainThoughtDetail(case.type, case.hasDirectMarkdown),
+            )
+            assertEquals(
+                case.name,
+                case.chunkedThought,
+                usesChunkedThoughtDetail(1, case.type, case.hasDirectMarkdown),
+            )
+        }
     }
 
     @Test

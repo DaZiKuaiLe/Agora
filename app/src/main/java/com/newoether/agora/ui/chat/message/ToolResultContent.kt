@@ -42,6 +42,7 @@ import com.newoether.agora.R
 import com.newoether.agora.model.CitationPolicy
 import com.newoether.agora.model.MessageSegment
 import com.newoether.agora.model.ToolImageAttachment
+import com.newoether.agora.tool.ToolTiming
 import com.newoether.agora.ui.theme.ChatType
 import com.newoether.agora.ui.theme.MonoFamily
 import com.newoether.agora.util.NoAutoScrollSelectionContainer
@@ -63,6 +64,7 @@ internal fun ToolDetailContent(
     } else {
         Modifier
     }
+    ToolTimingHeader(segment, contentAlignmentModifier)
     val args = presentation.rawArguments
     if (!args.isNullOrBlank() && args != "{}") {
         Column(modifier = contentAlignmentModifier.fillMaxWidth()) {
@@ -262,6 +264,39 @@ private fun ToolImagePreview(
 }
 
 @Composable
+private fun ToolTimingHeader(segment: MessageSegment, modifier: Modifier) {
+    val lines = ToolTiming.lines(segment)
+    if (lines.isEmpty()) return
+    Column(modifier = modifier.fillMaxWidth()) {
+        lines.forEach { line ->
+            val elapsed = line.ms
+            val label = if (elapsed == null) {
+                when (line.kind) {
+                    ToolTiming.Kind.CONNECT -> stringResource(R.string.tool_timing_connecting)
+                    ToolTiming.Kind.COMMAND -> stringResource(R.string.tool_timing_executing)
+                    ToolTiming.Kind.DURATION -> stringResource(R.string.tool_timing_working)
+                }
+            } else {
+                when (line.kind) {
+                    ToolTiming.Kind.CONNECT ->
+                        stringResource(R.string.tool_timing_connect, ToolTiming.format(elapsed))
+                    ToolTiming.Kind.COMMAND ->
+                        stringResource(R.string.tool_timing_command, ToolTiming.format(elapsed))
+                    ToolTiming.Kind.DURATION ->
+                        stringResource(R.string.tool_timing_duration, ToolTiming.format(elapsed))
+                }
+            }
+            Text(
+                text = label,
+                style = ChatType.meta,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(18.dp))
+    }
+}
+
+@Composable
 private fun ToolSectionLabel(text: String) {
     Text(
         text = text,
@@ -350,18 +385,32 @@ private fun McpResultContent(
 
 @Composable
 private fun FileGlobResult(presentation: ToolPresentation) {
-    val files = (presentation.result as? JsonObject)
-        ?.get("files") as? JsonArray
-    if (files.isNullOrEmpty()) {
+    val root = presentation.result as? JsonObject
+    val lines = globResultLines(root)
+    if (lines.isEmpty()) {
         ToolMutedContent(stringResource(R.string.tool_found_no_files))
         return
     }
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        files.forEachIndexed { index, value ->
-            val path = (value as? JsonPrimitive)?.contentOrNull ?: value.toString()
+        lines.forEachIndexed { index, path ->
             IndexedCodeLine(index + 1, path)
         }
     }
+}
+
+private fun globResultLines(root: JsonObject?): List<String> {
+    if (root == null) return emptyList()
+    val entries = root["entries"] as? JsonArray
+    if (entries != null) {
+        return entries.map { value ->
+            val obj = value as? JsonObject
+            val path = (obj?.get("path") as? JsonPrimitive)?.contentOrNull.orEmpty()
+            val type = (obj?.get("type") as? JsonPrimitive)?.contentOrNull
+            if (type.isNullOrBlank()) path else "$path ($type)"
+        }.filter { it.isNotBlank() }
+    }
+    val paths = root["paths"] as? JsonArray ?: root["files"] as? JsonArray
+    return paths?.map { (it as? JsonPrimitive)?.contentOrNull ?: it.toString() }.orEmpty()
 }
 
 private data class GrepUiMatch(

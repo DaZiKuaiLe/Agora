@@ -30,6 +30,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.newoether.agora.R
+import com.newoether.agora.model.ContextBudget
 import com.newoether.agora.model.ThinkingLevels
 import com.newoether.agora.ui.motion.LocalAgoraMotionPolicy
 import kotlin.math.abs
@@ -244,7 +245,10 @@ fun ThinkingControlPanel(
                                 modifier = Modifier.weight(1f)
                             )
                             Text(
-                                text = stringResource(R.string.thinking_budget_tokens, budgetPresets[budgetSliderPos.roundToInt()]),
+                                text = stringResource(
+                                    R.string.thinking_budget_tokens,
+                                    ContextBudget.groupedLabel(budgetPresets[budgetSliderPos.roundToInt()]),
+                                ),
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.Bold
@@ -330,7 +334,10 @@ fun thinkingControlShortLabel(
     if (!enabled) return stringResource(R.string.thinking_control_off)
     val effortText = effortLabel(ThinkingLevels.normalize(level))
     if (!budgetEnabled) return effortText
-    return stringResource(R.string.thinking_budget_tokens, budgetTokens.coerceAtLeast(1))
+    return stringResource(
+        R.string.thinking_budget_tokens,
+        ContextBudget.groupedLabel(budgetTokens.coerceAtLeast(1)),
+    )
 }
 
 @Composable

@@ -46,6 +46,9 @@ internal class ConversationRuntimeResources {
     private val _stopping = MutableStateFlow(false)
     val stopping: StateFlow<Boolean> = _stopping.asStateFlow()
 
+    private val _cooperativeStopRequested = MutableStateFlow(false)
+    val cooperativeStopRequested: StateFlow<Boolean> = _cooperativeStopRequested.asStateFlow()
+
     private val _generationSnapshot = MutableStateFlow(ConversationGenerationSnapshot())
     val generationSnapshot: StateFlow<ConversationGenerationSnapshot> =
         _generationSnapshot.asStateFlow()
@@ -74,9 +77,11 @@ internal class ConversationRuntimeResources {
 
     fun activate(identity: RuntimeRunIdentity, loading: Boolean) {
         uiGenToken = identity.ownerToken
+        _streamingMessage.value = null
         _isLoading.value = loading
         _generating.value = true
         _stopping.value = false
+        _cooperativeStopRequested.value = false
     }
 
     fun applyMailboxEffects(
@@ -101,19 +106,23 @@ internal class ConversationRuntimeResources {
         transition.effects.filterIsInstance<RunEffect.CancelProviderPass>()
             .singleOrNull()
             ?.let { effect ->
-                check(uiGenToken == effect.identity.ownerToken)
-                val stopped = _streamingMessage.value?.copy(status = MessageStatus.STOPPED)
-                check(stopped == null || effect.identity.runId != null) {
-                    "A streaming Stop effect requires a bound Run"
+                if (uiGenToken == effect.identity.ownerToken) {
+                    // Revoke DB/UI ownership before cancellation can unwind provider finally blocks.
+                    persistId.incrementAndGet()
+                    uiGenToken += 1
+                    _streamingMessage.value = if (effect.identity.runId != null) {
+                        _streamingMessage.value?.copy(status = MessageStatus.STOPPED)
+                    } else {
+                        // Unbound Stop is valid in Preparing. A leftover overlay is not a durable
+                        // stream and must not crash the mailbox (which would kill the process).
+                        null
+                    }
                 }
-                // Revoke DB/UI ownership before cancellation can unwind provider finally blocks.
-                persistId.incrementAndGet()
-                uiGenToken += 1
-                _streamingMessage.value = stopped
                 if (currentState is RunState.Stopping) {
                     _isLoading.value = true
                     _generating.value = true
                     _stopping.value = true
+                    _cooperativeStopRequested.value = false
                 }
             }
 
@@ -145,8 +154,13 @@ internal class ConversationRuntimeResources {
         if (this.uiGenToken == uiToken) _isLoading.value = value
     }
 
+    /**
+     * Token-gated overlay handoff for a normal terminal write (success, error, or cooperative
+     * Stop). Force-stop advances the UI token before leaving a STOPPED overlay, so a cancelled
+     * generation cannot steal that overlay here.
+     */
     fun streamMessageForClear(uiToken: Long): ChatMessage? = _streamingMessage.value
-        ?.takeIf { this.uiGenToken == uiToken && it.status != MessageStatus.STOPPED }
+        ?.takeIf { this.uiGenToken == uiToken }
 
     fun clearStreamingMessage() {
         _streamingMessage.value = null
@@ -173,6 +187,20 @@ internal class ConversationRuntimeResources {
         return false
     }
 
+    fun markCooperativeStopRequested(): Boolean {
+        if (!_generating.value || _stopping.value || _cooperativeStopRequested.value) {
+            return false
+        }
+        _cooperativeStopRequested.value = true
+        return true
+    }
+
+    fun consumeCooperativeStopRequested(): Boolean {
+        if (!_cooperativeStopRequested.value) return false
+        _cooperativeStopRequested.value = false
+        return true
+    }
+
     fun cancelStreamsAnd(job: Job?) {
         streamScope.cancelAll()
         job?.cancel()
@@ -189,8 +217,10 @@ internal class ConversationRuntimeResources {
 
     private fun release() {
         generationJob = null
+        _streamingMessage.value = null
         _isLoading.value = false
         _generating.value = false
         _stopping.value = false
+        _cooperativeStopRequested.value = false
     }
 }

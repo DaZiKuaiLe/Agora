@@ -1,157 +1,146 @@
 package com.newoether.agora.tool
 
+import android.os.SystemClock
 import com.newoether.agora.api.ToolDefinition
 import com.newoether.agora.data.ShellDeviceConfig
 import com.newoether.agora.model.ToolCallData
-import com.newoether.agora.model.ToolImageAttachment
-import com.newoether.agora.sandbox.SandboxManagerFactory
 import com.newoether.agora.util.Constants
+import com.newoether.agora.util.LocalDownloadTarget
+import com.newoether.agora.util.SshRemoteShell
+import com.newoether.agora.viewmodel.AllFilesAccessController
 import com.newoether.agora.viewmodel.GenerationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import java.io.File
-import android.graphics.BitmapFactory
-import java.security.MessageDigest
 
 class ShellToolProvider(
-    private val sandboxFactory: SandboxManagerFactory? = null,
+    @Suppress("UNUSED_PARAMETER") sandboxFactory: com.newoether.agora.sandbox.SandboxManagerFactory? = null,
     private val imageStore: ToolImageStore? = null,
     private val downloadsDir: File? = null,
+    private val context: android.content.Context? = null,
+    private val detailStore: DetailStore? = null,
 ) : ToolProvider {
 
-    private val sandbox = sandboxFactory?.create()
-    private val durableJobs = ShellDurableJobExecutor()
+    private val localBackend: Backend? = context?.let { NodeBackend(it) }
+    private val fileTools by lazy {
+        FileToolExecutor(
+            context = context,
+            resolveDevice = ::resolveShellDevice,
+            serverNotFound = ::serverNotFoundMessage,
+            confirm = { device, summary, shared ->
+                confirmTarget(device, summary, localSharedStorageExposed = shared)
+            },
+            persistDetectedShell = persistSshDetectedShell,
+        )
+    }
+    private val asyncTools by lazy {
+        AsyncCommandExecutor(
+            context = context,
+            detailStore = detailStore,
+            resolveDevice = ::resolveShellDevice,
+            serverNotFound = ::serverNotFoundMessage,
+            confirm = { device, summary, shared ->
+                confirmTarget(device, summary, localSharedStorageExposed = shared)
+            },
+            persistDetectedShell = persistSshDetectedShell,
+        )
+    }
 
     /**
-     * Optional user-confirmation gate for state-changing operations. The isolated local sandbox
-     * normally proceeds directly; once shared storage is mounted, local commands/writes are gated
-     * too because they can mutate files outside the app sandbox.
+     * Optional user-confirmation gate for state-changing operations. Local commands and scripts are
+     * gated because they mutate app-private (or shared) storage.
      */
     var confirm: (suspend (server: String, summary: String) -> Boolean)? = null
 
-    /** Best-effort cleanup after the caller has committed these exact results to Room. */
+    /** Optional handshake that shows the all-files access prompt and awaits the user's outcome. */
+    var requestAllFilesAccess: (suspend (reason: String?) -> AllFilesAccessController.Outcome)? = null
+
+    /** Persist auto-detected SSH exec shell onto the matching device config. */
+    var persistSshDetectedShell: ((deviceId: String, detected: String) -> Unit)? = null
+
+    /** No-op retained for GenerationToolExecutor call sites (Conch job ack removed). */
+    @Suppress("UNUSED_PARAMETER")
     internal suspend fun acknowledgeCommittedJobs(
         calls: List<ToolCallData>,
         context: GenerationContext,
-    ) {
-        val acknowledgements = terminalShellJobAcknowledgements(calls)
-        if (acknowledgements.isEmpty()) return
-        supervisorScope {
-            acknowledgements.map { acknowledgement ->
-                async {
-                    withTimeoutOrNull(JOB_ACK_TIMEOUT_MS) {
-                        val backend = getConchBackend(acknowledgement.serverName, context)
-                            ?: return@withTimeoutOrNull
-                        try {
-                            backend.acknowledgeJob(acknowledgement.jobId)
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (_: Exception) {
-                            // Retention TTL/count remains the safe fallback when cleanup is offline.
-                        } finally {
-                            backend.close()
-                        }
-                    }
-                }
-            }.awaitAll()
-        }
-    }
+    ) = Unit
 
     private suspend fun confirmTarget(
         device: ShellDeviceConfig?,
         summary: String,
         localSharedStorageExposed: Boolean = false,
+        targetLabel: String? = null,
     ): Boolean {
         if (device == null && !localSharedStorageExposed) return true
-        val target = device?.name?.ifBlank { "${device.type} server" }
-            ?: "Local Sandbox · /mnt/shared"
+        val target = targetLabel
+            ?: device?.name?.ifBlank { "${device.type} server" }
+            ?: "Local"
         return confirm?.invoke(target, summary) ?: true
-    }
-
-    private fun targetsSharedStorage(path: String): Boolean {
-        val normalized = path.trim().replace('\\', '/').replace(Regex("/+"), "/")
-        return normalized == "/mnt/shared" || normalized.startsWith("/mnt/shared/")
     }
 
     // ── Helpers ────────────────────────────────────────────
 
     private fun resolveShellDevice(serverName: String, ctx: GenerationContext): ShellDeviceConfig? {
-        if (serverName.equals("Local Sandbox", ignoreCase = true)) return null
+        val sshDevices = ctx.shellDevices.filter { it.type == "ssh" }
         return if (serverName.isNotBlank()) {
-            ctx.shellDevices.find { it.name.equals(serverName, ignoreCase = true) }
-        } else if (ctx.shellDevices.size == 1) {
-            ctx.shellDevices.first()
+            sshDevices.find { it.name.equals(serverName, ignoreCase = true) }
+        } else if (sshDevices.size == 1) {
+            sshDevices.first()
         } else null
     }
 
     private fun serverNotFoundMessage(serverName: String, ctx: GenerationContext): String {
-        val hasSandbox = ctx.sandboxEnabled && sandboxFactory?.isAvailable() == true
-        val allNames = buildList {
-            if (hasSandbox) add("\"Local Sandbox\"")
-            addAll(ctx.shellDevices.map { "\"${it.name}\"" })
-        }
+        val allNames = ctx.shellDevices
+            .filter { it.type == "ssh" }
+            .map { "\"${it.name.ifBlank { "Untitled" }}\"" }
         return if (allNames.size == 1) {
-            "Unknown server: $serverName. Use ${allNames[0]} or omit the server parameter."
+            "Unknown remote terminal: $serverName. Use ${allNames[0]} or omit the server parameter."
+        } else if (allNames.isEmpty()) {
+            "No remote terminals are configured."
         } else {
             val names = allNames.joinToString(", ")
-            if (serverName.isBlank()) "Multiple servers available. Use list_shells to see them, then specify one: $names."
-            else "Unknown server: $serverName. Available: $names."
+            if (serverName.isBlank()) {
+                "Multiple remote terminals available. Use list_remote_shells to see them, then specify one: $names."
+            } else {
+                "Unknown remote terminal: $serverName. Available: $names."
+            }
         }
     }
 
-    private suspend fun getBackend(serverName: String, ctx: GenerationContext): Backend? {
-        // Local Sandbox
-        if (serverName.equals("Local Sandbox", ignoreCase = true) && ctx.sandboxEnabled) {
-            if (sandbox?.isAvailable() == true) return SandboxBackend(sandbox)
-            if (sandbox != null) return null
-        }
-        if (serverName.isBlank()) {
-            if (ctx.sandboxEnabled && sandbox?.isAvailable() == true) {
-                return SandboxBackend(sandbox)
-            }
-        }
+    private fun getBackend(serverName: String, ctx: GenerationContext): SshBackend? {
         val device = resolveShellDevice(serverName, ctx) ?: return null
-        return when (device.type) {
-            "ssh" -> SshBackend(device)
-            else -> ConchBackend(device)
+        return SshBackend(device).also { backend ->
+            backend.persistDetectedShell = persistSshDetectedShell
         }
     }
 
     // ── ToolProvider interface ─────────────────────────────
 
     override fun definitions(ctx: GenerationContext): List<ToolDefinition> =
-        ShellToolDefinitions.build(ctx)
+        ShellToolDefinitions.build(
+            ctx = ctx,
+            packagedCliNames = context?.let { LocalToolchain.availableNames(it) }.orEmpty(),
+        ) + FileToolDefinitions.build(ctx) + AsyncCommandToolDefinitions.build(ctx)
 
     override suspend fun execute(name: String, arguments: String, ctx: GenerationContext): String {
         return when (name) {
-            "list_shells" -> listShells(ctx)
-            "execute_shell_command" -> executeShellCommand(arguments, ctx)
-            "list_shell_jobs" -> durableJobs.listShellJobs(arguments, ctx)
-            "get_shell_job" -> durableJobs.getShellJob(arguments, ctx)
-            "wait_for_job" -> durableJobs.waitForShellJob(arguments, ctx)
-            "stop_shell_job" -> stopShellJob(arguments, ctx)
-            "file_read" -> executeFileRead(arguments, ctx)
-            "file_write" -> executeFileWrite(arguments, ctx)
-            "file_edit" -> executeFileEdit(arguments, ctx)
-            "file_glob" -> executeFileGlob(arguments, ctx)
-            "file_grep" -> executeFileGrep(arguments, ctx)
-            "view_image" -> executeViewImage(arguments, ctx).text
-            "upload_file_to_server" -> executeUploadFile(arguments, ctx)
-            "download_file" -> executeDownloadFile(arguments, ctx).text
+            "list_remote_shells" -> listRemoteShells(ctx)
+            "execute_remote_command" -> executeRemoteCommand(arguments, ctx)
+            "execute_local_command" -> executeLocalCommand(arguments, ctx)
+            "request_all_files_access" -> executeRequestAllFilesAccess(arguments)
+            "read_image" -> executeReadImage(arguments).text
+            OpenFile.TOOL -> executeOpenFile(arguments).text
+            "upload_file_to_server" -> executeUploadFile(arguments, ctx).text
+            "download_file" -> executeDownloadFile(arguments, ctx).result.text
+            in FileToolDefinitions.NAMES -> fileTools.execute(name, arguments, ctx)
+            in AsyncCommandToolDefinitions.NAMES -> asyncTools.execute(name, arguments, ctx)
             else -> "Unknown tool: $name"
         }
     }
@@ -162,189 +151,220 @@ class ShellToolProvider(
         ctx: GenerationContext,
     ): Flow<ToolExecutionEvent> {
         return when (name) {
-            "execute_shell_command" -> executeShellCommandEvents(arguments, ctx)
-            "wait_for_job" -> waitForShellJobEvents(arguments, ctx)
-            "view_image" -> flow {
-                emit(ToolExecutionEvent.Completed(executeViewImage(arguments, ctx)))
+            "execute_remote_command" -> executeRemoteCommandEvents(arguments, ctx)
+            "execute_local_command" -> flow {
+                emit(ToolExecutionEvent.Completed(executeLocalCommand(arguments, ctx)))
+            }
+            "read_image" -> flow {
+                emit(ToolExecutionEvent.Completed(executeReadImage(arguments)))
+            }
+            OpenFile.TOOL -> flow {
+                emit(ToolExecutionEvent.Completed(executeOpenFile(arguments)))
+            }
+            "upload_file_to_server" -> flow {
+                val outcome = executeUploadFile(arguments, ctx) { connectMs ->
+                    emit(ToolExecutionEvent.Timing(connectMs = connectMs))
+                }
+                outcome.execMs?.let { emit(ToolExecutionEvent.Timing(execMs = it)) }
+                emit(ToolExecutionEvent.Completed(outcome.text))
             }
             "download_file" -> flow {
-                emit(ToolExecutionEvent.Completed(executeDownloadFile(arguments, ctx)))
+                val outcome = executeDownloadFile(arguments, ctx) { connectMs ->
+                    emit(ToolExecutionEvent.Timing(connectMs = connectMs))
+                }
+                outcome.execMs?.let { emit(ToolExecutionEvent.Timing(execMs = it)) }
+                emit(ToolExecutionEvent.Completed(outcome.result))
             }
+            in FileToolDefinitions.REMOTE_NAMES -> fileTools.executeEvents(name, arguments, ctx)
+            ProcessTools.START_REMOTE -> asyncTools.executeEvents(name, arguments, ctx)
             else -> super<ToolProvider>.executeEvents(name, arguments, ctx)
         }
     }
 
     override fun handles(name: String): Boolean = name in setOf(
-        "list_shells", "execute_shell_command",
-        "list_shell_jobs", "get_shell_job", "wait_for_job", "stop_shell_job",
-        "file_read", "file_write", "file_edit", "file_glob", "file_grep", "view_image",
-        "upload_file_to_server", "download_file"
-    )
+        "list_remote_shells", "execute_remote_command", "execute_local_command",
+        "request_all_files_access", "read_image", OpenFile.TOOL,
+        "upload_file_to_server", "download_file",
+    ) || name in FileToolDefinitions.NAMES || name in AsyncCommandToolDefinitions.NAMES
 
-    // ── list_shells ────────────────────────────────────────
+    // ── list_remote_shells ─────────────────────────────────
 
-    private suspend fun listShells(ctx: GenerationContext): String {
-        val items = buildList {
-            val sandboxOk = ctx.sandboxEnabled && sandbox?.isAvailable() == true
-            if (sandboxOk) {
-                add(buildJsonObject {
-                    put("name", "Local Sandbox")
-                    put("description", "Alpine Linux on-device")
-                    put("type", "local")
-                })
-            }
-            ctx.shellDevices.forEach { d ->
-                add(buildJsonObject {
-                    put("name", d.name.ifBlank { "Untitled" })
-                    put("description", d.description)
-                    put("type", d.type)
-                    when (d.type) {
-                        "ssh" -> { put("host", d.sshHost); put("port", d.sshPort) }
-                        else -> put("url", d.serverUrl)
-                    }
-                })
+    private suspend fun listRemoteShells(ctx: GenerationContext): String {
+        val items = ctx.shellDevices.filter { it.type == "ssh" }.map { d ->
+            val fp = SshRemoteShell.fingerprint(
+                preference = d.sshShell,
+                detected = d.sshDetectedShell,
+            )
+            buildJsonObject {
+                put("name", d.name.ifBlank { "Untitled" })
+                put("description", d.description)
+                put("type", d.type)
+                put("host", d.sshHost)
+                put("port", d.sshPort)
+                put("shell_preference", fp.shellPreference)
+                put("shell", fp.shell)
+                put("command_syntax", fp.commandSyntax)
+                put("os_hint", fp.osHint)
             }
         }
         return buildJsonObject {
-            put("type", "list_shells")
+            put("type", "list_remote_shells")
             putJsonArray("devices") { items.forEach { add(it) } }
         }.toString()
     }
 
-    // ── Shell execution ────────────────────────────────────
+    // ── Local execution ────────────────────────────────────
 
-    private suspend fun executeShellCommand(arguments: String, ctx: GenerationContext): String {
+    private suspend fun executeRequestAllFilesAccess(arguments: String): String {
+        val args = parseToolArgs(arguments)
+        val reason = arg(args, "reason").ifBlank { null }
+        val outcome = requestAllFilesAccess?.invoke(reason)
+            ?: AllFilesAccessController.Outcome.UNAVAILABLE
+        val status = when (outcome) {
+            AllFilesAccessController.Outcome.GRANTED -> "granted"
+            AllFilesAccessController.Outcome.DENIED -> "denied"
+            AllFilesAccessController.Outcome.DISMISSED -> "dismissed"
+            AllFilesAccessController.Outcome.UNAVAILABLE -> "unavailable"
+        }
+        return buildJsonObject {
+            put("type", "request_all_files_access")
+            put("status", status)
+            when (outcome) {
+                AllFilesAccessController.Outcome.GRANTED ->
+                    put("message", "All-files access is granted. Retry the shared-storage operation.")
+                AllFilesAccessController.Outcome.DENIED ->
+                    put(
+                        "message",
+                        "User returned without granting all-files access. Shared storage remains unavailable.",
+                    )
+                AllFilesAccessController.Outcome.DISMISSED ->
+                    put(
+                        "message",
+                        "User dismissed the permission prompt. Ask before requesting again, or use app-private paths.",
+                    )
+                AllFilesAccessController.Outcome.UNAVAILABLE ->
+                    put(
+                        "message",
+                        "Cannot show the permission prompt right now (no foreground UI or no handler). Ask the user to open Agora and grant all-files access in Remote Terminals settings.",
+                    )
+            }
+            if (reason != null) put("reason", reason)
+        }.toString()
+    }
+
+    private suspend fun executeLocalCommand(arguments: String, ctx: GenerationContext): String {
         val args = parseToolArgs(arguments)
         val command = arg(args, "command")
-        if (command.isBlank()) return jsonError("execute_shell_command", "no_command")
-        val serverName = arg(args, "server")
-        val background = boolArg(args, "background")
-        val foregroundMaxMs = Constants.TOOL_EXECUTION_TIMEOUT_MS.toInt()
-        val timeoutMax = if (background) {
-            ShellDurableJobExecutor.BACKGROUND_JOB_MAX_MS
-        } else {
-            foregroundMaxMs
-        }
-        val rawTimeout = arg(args, "timeout_ms")
-        if (rawTimeout.isBlank()) return jsonError(
-            "execute_shell_command", "timeout_ms is required", server = serverName, command = command,
-        )
-        val timeoutMs = (rawTimeout.toIntOrNull()
-            ?: return jsonError(
-                "execute_shell_command",
-                "timeout_ms must be an integer, got \"$rawTimeout\"",
-                server = serverName,
-                command = command,
-            )).coerceIn(1000, timeoutMax)
+        if (command.isBlank()) return jsonError("execute_local_command", "no_command")
+        val timeoutMs = arg(args, "timeout_ms").toIntOrNull()
+            ?.coerceIn(1000, Constants.TOOL_EXECUTION_TIMEOUT_MS.toInt())
+            ?: Constants.TOOL_EXECUTION_TIMEOUT_MS.toInt()
         val workdir = arg(args, "workdir")
-
-        if (background) {
-            val backend = getConchBackend(serverName, ctx)
-                ?: return jsonError(
-                    "execute_shell_command",
-                    conchServerNotFoundMessage(serverName, ctx),
-                    server = serverName,
-                    command = command,
-                )
-            return try {
-                if (!confirmTarget(backend.device, "start background job: $ $command")) {
-                    return jsonError(
-                        "execute_shell_command",
-                        "denied_by_user: the user declined to run this background command",
-                        server = backend.device.name,
-                        command = command,
-                    )
-                }
-                backend.startJob(command, workdir, timeoutMs)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (e: Exception) {
-                jsonError(
-                    "execute_shell_command",
-                    e.message ?: "Failed to start background job",
-                    server = backend.device.name,
-                    command = command,
-                )
-            } finally {
-                backend.close()
-            }
-        }
-
-        val backend = getBackend(serverName, ctx)
-            ?: return jsonError("execute_shell_command", serverNotFoundMessage(serverName, ctx))
+        val backend = localBackend
+            ?: return jsonError(
+                "execute_local_command",
+                "Local command backend is not available. Enable the local command tool first.",
+            )
         return try {
-            // Gate on the backend's ACTUAL target: with a blank server name the sandbox wins
-            // resolution, while resolveShellDevice() would name an unrelated remote device.
             if (!confirmTarget(
                     backend.device,
                     "$ $command",
-                    localSharedStorageExposed =
-                        backend.device == null && ctx.sandboxSharedStorageEnabled,
+                    localSharedStorageExposed = backend.device == null,
+                    targetLabel = "Local",
                 )
             ) {
-                return jsonError("execute_shell_command", "denied_by_user: the user declined to run this command", server = serverName, command = command)
-            }
-            if (backend is ConchBackend) {
-                durableJobs.executeDurableForeground(
-                    backend = backend,
-                    command = command,
-                    workdir = workdir,
-                    waitMs = timeoutMs.coerceAtMost(maxWaitMs(ctx)),
+                return jsonError(
+                    "execute_local_command",
+                    "denied_by_user: the user declined to run this command",
                 )
-            } else {
-                backend.executeCommand(command, workdir, timeoutMs)
             }
+            applyOkExitIfRequested(
+                backend.executeCommand(command, workdir, timeoutMs),
+                intSetArg(args, "ok_exit"),
+                detailStore,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
+            jsonError("execute_local_command", e.message ?: "Local command failed")
         } finally {
             backend.close()
         }
     }
 
-    /**
-     * Starts a Conch command as a durable job, then treats foreground execution as a bounded wait
-     * on that same process. A wait expiry returns ownership to the model through job_id; it never
-     * kills or replays the command.
-     */
+    // ── Remote execution ───────────────────────────────────
 
-    private fun executeShellCommandEvents(
+    private suspend fun executeRemoteCommand(arguments: String, ctx: GenerationContext): String {
+        val args = parseToolArgs(arguments)
+        val command = arg(args, "command")
+        if (command.isBlank()) return jsonError("execute_remote_command", "no_command")
+        val serverName = arg(args, "server")
+        val foregroundMaxMs = Constants.TOOL_EXECUTION_TIMEOUT_MS.toInt()
+        val rawTimeout = arg(args, "timeout_ms")
+        if (rawTimeout.isBlank()) {
+            return jsonError(
+                "execute_remote_command",
+                "timeout_ms is required",
+                server = serverName,
+                command = command,
+            )
+        }
+        val timeoutMs = (rawTimeout.toIntOrNull()
+            ?: return jsonError(
+                "execute_remote_command",
+                "timeout_ms must be an integer, got \"$rawTimeout\"",
+                server = serverName,
+                command = command,
+            )).coerceIn(1000, foregroundMaxMs)
+        val workdir = arg(args, "workdir")
+
+        val backend = getBackend(serverName, ctx)
+            ?: return jsonError("execute_remote_command", serverNotFoundMessage(serverName, ctx))
+        return try {
+            if (!confirmTarget(
+                    backend.device,
+                    "$ $command",
+                    localSharedStorageExposed = false,
+                )
+            ) {
+                return jsonError(
+                    "execute_remote_command",
+                    "denied_by_user: the user declined to run this command",
+                    server = serverName,
+                    command = command,
+                )
+            }
+            applyOkExitIfRequested(
+                backend.executeCommand(command, workdir, timeoutMs),
+                intSetArg(args, "ok_exit"),
+                detailStore,
+            )
+        } finally {
+            backend.close()
+        }
+    }
+
+    private fun executeRemoteCommandEvents(
         arguments: String,
         ctx: GenerationContext,
     ): Flow<ToolExecutionEvent> = flow {
         val args = parseToolArgs(arguments)
         val command = arg(args, "command")
         if (command.isBlank()) {
-            emit(ToolExecutionEvent.Completed(jsonError("execute_shell_command", "no_command")))
+            emit(ToolExecutionEvent.Completed(jsonError("execute_remote_command", "no_command")))
             return@flow
         }
         val serverName = arg(args, "server")
-        if (boolArg(args, "background")) {
-            val device = resolveShellDevice(serverName, ctx)?.takeIf { it.type != "ssh" }
-            if (device == null) {
-                emit(
-                    ToolExecutionEvent.Completed(
-                        jsonError(
-                            "execute_shell_command",
-                            conchServerNotFoundMessage(serverName, ctx),
-                            server = serverName,
-                            command = command,
-                        ),
-                    ),
-                )
-                return@flow
-            }
-            emit(ToolExecutionEvent.TargetResolved(device.name))
-            emit(ToolExecutionEvent.Progress("Starting durable background job"))
-            // executeShellCommand owns the one confirmation and backend lifecycle.
-            emit(ToolExecutionEvent.Completed(executeShellCommand(arguments, ctx)))
-            return@flow
-        }
         val foregroundMaxMs = Constants.TOOL_EXECUTION_TIMEOUT_MS.toInt()
         val rawTimeout = arg(args, "timeout_ms")
         if (rawTimeout.isBlank()) {
             emit(
                 ToolExecutionEvent.Completed(
                     jsonError(
-                        "execute_shell_command", "timeout_ms is required",
-                        server = serverName, command = command,
+                        "execute_remote_command",
+                        "timeout_ms is required",
+                        server = serverName,
+                        command = command,
                     ),
                 ),
             )
@@ -355,7 +375,7 @@ class ShellToolProvider(
                 emit(
                     ToolExecutionEvent.Completed(
                         jsonError(
-                            "execute_shell_command",
+                            "execute_remote_command",
                             "timeout_ms must be an integer, got \"$rawTimeout\"",
                             server = serverName,
                             command = command,
@@ -369,28 +389,27 @@ class ShellToolProvider(
         if (backend == null) {
             emit(
                 ToolExecutionEvent.Completed(
-                    jsonError("execute_shell_command", serverNotFoundMessage(serverName, ctx)),
+                    jsonError("execute_remote_command", serverNotFoundMessage(serverName, ctx)),
                 ),
             )
             return@flow
         }
         emit(
             ToolExecutionEvent.TargetResolved(
-                backend.device?.name?.ifBlank { "Untitled" } ?: "Local Sandbox",
+                backend.device.name.ifBlank { "Untitled" },
             ),
         )
         try {
             if (!confirmTarget(
                     backend.device,
                     "$ $command",
-                    localSharedStorageExposed =
-                        backend.device == null && ctx.sandboxSharedStorageEnabled,
+                    localSharedStorageExposed = false,
                 )
             ) {
                 emit(
                     ToolExecutionEvent.Completed(
                         jsonError(
-                            "execute_shell_command",
+                            "execute_remote_command",
                             "denied_by_user: the user declined to run this command",
                             server = serverName,
                             command = command,
@@ -399,139 +418,104 @@ class ShellToolProvider(
                 )
                 return@flow
             }
-            if (backend is ConchBackend) {
-                emit(ToolExecutionEvent.Progress("Running as a durable foreground job"))
+            if (backend.device.sshHost.isBlank()) {
                 emit(
                     ToolExecutionEvent.Completed(
-                        durableJobs.executeDurableForeground(
-                            backend = backend,
+                        jsonError(
+                            "execute_remote_command",
+                            "SSH device \"${backend.device.name}\" has no host configured.",
+                            server = serverName,
                             command = command,
-                            workdir = workdir,
-                            waitMs = timeoutMs.coerceAtMost(maxWaitMs(ctx)),
-                            onOutput = { delta ->
-                                emit(ToolExecutionEvent.OutputDelta(delta))
-                            },
-                        )
-                    )
+                        ),
+                    ),
                 )
-            } else {
-                emit(ToolExecutionEvent.Progress("Running command"))
-                backend.executeCommandEvents(command, workdir, timeoutMs).collect { emit(it) }
+                return@flow
+            }
+            val connectMs = try {
+                backend.ensureSession()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                emit(
+                    ToolExecutionEvent.Completed(
+                        jsonError(
+                            "execute_remote_command",
+                            error.message ?: "SSH connection failed",
+                            server = serverName,
+                            command = command,
+                        ),
+                    ),
+                )
+                return@flow
+            }
+            emit(ToolExecutionEvent.Timing(connectMs = connectMs))
+            emit(ToolExecutionEvent.Progress("Running command"))
+            val startedAt = SystemClock.elapsedRealtime()
+            backend.executeCommandEvents(command, workdir, timeoutMs).collect { event ->
+                if (event is ToolExecutionEvent.Completed) {
+                    emit(ToolExecutionEvent.Timing(execMs = SystemClock.elapsedRealtime() - startedAt))
+                }
+                emit(event)
             }
         } finally {
             backend.close()
         }
     }
 
-    private fun waitForShellJobEvents(
-        arguments: String,
-        ctx: GenerationContext,
-    ): Flow<ToolExecutionEvent> = flow {
-        val serverName = arg(parseToolArgs(arguments), "server")
-        resolveConchDevice(serverName, ctx)?.let { device ->
-            emit(ToolExecutionEvent.TargetResolved(device.name))
-        }
-        emit(ToolExecutionEvent.Progress("Waiting for durable job"))
-        emit(
-            ToolExecutionEvent.Completed(
-                durableJobs.waitForShellJob(arguments, ctx) { snapshot ->
-                    emit(ToolExecutionEvent.OutputSnapshot(snapshot))
-                },
-            ),
+    private fun executeOpenFile(arguments: String): ToolExecutionResult {
+        val path = arg(parseToolArgs(arguments), "path")
+        val opened = OpenFile.launch(context, path)
+            .getOrElse {
+                return ToolExecutionResult(
+                    text = jsonError(OpenFile.TOOL, it.message ?: "Failed to open"),
+                    isError = true,
+                )
+            }
+        return ToolExecutionResult(
+            text = buildJsonObject {
+                put("type", OpenFile.TOOL)
+                put("path", opened.path)
+                put("kind", opened.kind)
+                put("mime", opened.mime)
+                put("ok", true)
+            }.toString(),
         )
     }
 
-    // ── Durable job mutations ──────────────────────────────
-
-    private suspend fun stopShellJob(arguments: String, ctx: GenerationContext): String {
-        val args = parseToolArgs(arguments)
-        val jobId = arg(args, "job_id")
-        if (jobId.isBlank()) return jsonError("stop_shell_job", "job_id is required")
-        val serverName = arg(args, "server")
-        val backend = getConchBackend(serverName, ctx)
-            ?: return jsonError(
-                "stop_shell_job",
-                conchServerNotFoundMessage(serverName, ctx),
-                server = serverName,
-            )
-        return try {
-            if (!confirmTarget(backend.device, "stop background shell job: $jobId")) {
-                return jsonError(
-                    "stop_shell_job",
-                    "denied_by_user: the user declined to stop this job",
-                    server = backend.device.name,
-                )
-            }
-            backend.stopJob(jobId)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (e: Exception) {
-            jsonError(
-                "stop_shell_job",
-                e.message ?: "Failed to stop shell job",
-                server = backend.device.name,
-            )
-        } finally {
-            backend.close()
-        }
-    }
-
-    // ── File tools ─────────────────────────────────────────
-
-    private suspend fun executeViewImage(
-        arguments: String,
-        ctx: GenerationContext,
-    ): ToolExecutionResult {
+    private suspend fun executeReadImage(arguments: String): ToolExecutionResult {
         val args = parseToolArgs(arguments)
         val path = arg(args, "path")
         if (path.isBlank()) {
             return ToolExecutionResult(
-                text = jsonError("view_image", "path is required"),
+                text = jsonError("read_image", "path is required"),
                 isError = true,
             )
         }
-        val serverName = arg(args, "server")
         val store = imageStore
             ?: return ToolExecutionResult(
-                text = jsonError(
-                    "view_image",
-                    "Tool image storage is unavailable",
-                    server = serverName,
-                ),
+                text = jsonError("read_image", "Tool image storage is unavailable"),
                 isError = true,
             )
-        val backend = getConchBackend(serverName, ctx)
-            ?: return ToolExecutionResult(
-                text = jsonError(
-                    "view_image",
-                    conchServerNotFoundMessage(serverName, ctx),
-                    server = serverName,
-                ),
+        val file = File(path)
+        if (!file.isFile || !file.exists()) {
+            return ToolExecutionResult(
+                text = jsonError("read_image", "File not found: $path"),
                 isError = true,
             )
+        }
         return try {
-            val remote = backend.viewImage(path)
-            if (remote.error != null) {
-                return ToolExecutionResult(
-                    text = jsonError(
-                        "view_image",
-                        remote.error,
-                        server = backend.device.name,
-                    ),
-                    isError = true,
-                )
-            }
+            val bytes = withContext(Dispatchers.IO) { file.readBytes() }
+            val mime = mimeTypeFor(file) ?: "image/jpeg"
             val attachment = withContext(Dispatchers.IO) {
-                store.persistBase64(
-                    data = remote.data,
-                    mimeType = remote.mimeType,
-                    filePrefix = "conch",
+                store.persistBytes(
+                    bytes = bytes,
+                    mimeType = mime,
+                    filePrefix = "local",
                 )
             }
             ToolExecutionResult(
                 text = buildJsonObject {
-                    put("type", "view_image")
-                    put("server", backend.device.name)
+                    put("type", "read_image")
                     put("path", path)
                     put("mime_type", attachment.mimeType)
                     put("size", attachment.sizeBytes)
@@ -542,170 +526,14 @@ class ShellToolProvider(
                 images = listOf(attachment),
                 transcribeImages = true,
             )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Exception) {
             ToolExecutionResult(
-                text = jsonError(
-                    "view_image",
-                    error.message ?: "Failed to load image",
-                    server = backend.device.name,
-                ),
-                isError = true,
-            )
-        } finally {
-            backend.close()
-        }
-    }
-
-    private suspend fun executeUploadFile(arguments: String, ctx: GenerationContext): String {
-        val args = parseToolArgs(arguments)
-        val localPath = arg(args, "local_path")
-        if (localPath.isBlank()) return jsonError("upload_file_to_server", "local_path is required")
-        val remotePath = arg(args, "remote_path")
-        if (remotePath.isBlank()) return jsonError("upload_file_to_server", "remote_path is required")
-        val serverName = arg(args, "server")
-
-        val backend = getBackend(serverName, ctx) as? SshBackend ?: return jsonError(
-            "upload_file_to_server",
-            "Only SSH servers support SFTP upload. Use a type=ssh server.",
-            server = serverName,
-        )
-        return try {
-            if (!confirmTarget(backend.device, "upload file: $localPath → $remotePath")) {
-                return jsonError(
-                    "upload_file_to_server",
-                    "denied_by_user: the user declined to upload this file",
-                    server = serverName,
-                )
-            }
-            val error = backend.uploadFile(localPath, remotePath)
-            if (error != null) return error
-            buildJsonObject {
-                put("type", "upload_file_to_server")
-                put("server", backend.device.name)
-                put("local_path", localPath)
-                put("remote_path", remotePath)
-                put("ok", true)
-            }.toString()
-        } finally {
-            backend.close()
-        }
-    }
-
-    private suspend fun executeDownloadFile(arguments: String, ctx: GenerationContext): ToolExecutionResult {
-        val args = parseToolArgs(arguments)
-        val remotePath = arg(args, "remote_path")
-        if (remotePath.isBlank()) {
-            return ToolExecutionResult(
-                text = jsonError("download_file", "remote_path is required"),
+                text = jsonError("read_image", error.message ?: "Failed to load image"),
                 isError = true,
             )
         }
-        val serverName = arg(args, "server")
-        val store = imageStore
-            ?: return ToolExecutionResult(
-                text = jsonError("download_file", "Tool image storage is unavailable", server = serverName),
-                isError = true,
-            )
-        val backend = getBackend(serverName, ctx) as? SshBackend ?: return ToolExecutionResult(
-            text = jsonError(
-                "download_file",
-                "Only SSH servers support SFTP download. Use a type=ssh server.",
-                server = serverName,
-            ),
-            isError = true,
-        )
-        val targetDir = arg(args, "target_dir")
-        val baseDownload = downloadsDir?.absolutePath
-            ?: File(System.getProperty("java.io.tmpdir") ?: ".").absolutePath
-        // Force every download into the App-private tree so a model cannot scatter files
-        // elsewhere on the device. A nested path is allowed only when it stays under the base.
-        val localDir = if (targetDir.isBlank() || !File(targetDir).canonicalPath.startsWith(File(baseDownload).canonicalPath)) {
-            baseDownload
-        } else {
-            targetDir
-        }
-        return try {
-            if (!confirmTarget(backend.device, "download file: $remotePath → $localDir")) {
-                return ToolExecutionResult(
-                    text = jsonError(
-                        "download_file",
-                        "denied_by_user: the user declined to download this file",
-                        server = serverName,
-                    ),
-                    isError = true,
-                )
-            }
-            val dest = backend.downloadFile(remotePath, localDir)
-            val destFile = dest?.let { File(it) }
-            if (destFile == null || !destFile.exists()) {
-                val detail = dest?.takeIf { it.contains("failed") || it.contains("error") }
-                    ?: "SFTP download failed"
-                return ToolExecutionResult(
-                    text = jsonError("download_file", detail, server = backend.device.name),
-                    isError = true,
-                )
-            }
-            val attachment = describeDownloadedImage(destFile, remotePath)
-            if (attachment == null) {
-                // Non-image or unreadable: still return the path so the model can reference it.
-                return ToolExecutionResult(
-                    text = buildJsonObject {
-                        put("type", "download_file")
-                        put("server", backend.device.name)
-                        put("remote_path", remotePath)
-                        put("local_path", destFile.absolutePath)
-                        put("ok", true)
-                    }.toString(),
-                )
-            }
-            ToolExecutionResult(
-                text = buildJsonObject {
-                    put("type", "download_file")
-                    put("server", backend.device.name)
-                    put("remote_path", remotePath)
-                    put("local_path", attachment.path)
-                    put("mime_type", attachment.mimeType)
-                    put("size", attachment.sizeBytes)
-                    attachment.width?.let { put("width", it) }
-                    attachment.height?.let { put("height", it) }
-                    put("ok", true)
-                }.toString(),
-                images = listOf(attachment),
-                transcribeImages = true,
-            )
-        } catch (error: Exception) {
-            ToolExecutionResult(
-                text = jsonError(
-                    "download_file",
-                    error.message ?: "Failed to download file",
-                    server = backend.device.name,
-                ),
-                isError = true,
-            )
-        } finally {
-            backend.close()
-        }
-    }
-
-    private fun describeDownloadedImage(file: File, display: String): ToolImageAttachment? {
-        if (!file.exists() || file.length() <= 0L) return null
-        val mime = mimeTypeFor(file).orEmpty()
-        if (!mime.startsWith("image/")) return null
-        val bytes = runCatching { file.readBytes() }.getOrNull() ?: return null
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        val sha = MessageDigest.getInstance("SHA-256")
-            .digest(bytes)
-            .joinToString("") { "%02x".format(it) }
-        return ToolImageAttachment(
-            path = file.absolutePath,
-            mimeType = mime,
-            sizeBytes = bytes.size.toLong(),
-            width = bounds.outWidth,
-            height = bounds.outHeight,
-            sha256 = sha,
-        )
     }
 
     private fun mimeTypeFor(file: File): String? = when (file.extension.lowercase()) {
@@ -719,171 +547,188 @@ class ShellToolProvider(
         else -> null
     }
 
-    private suspend fun executeFileRead(arguments: String, ctx: GenerationContext): String {
-        val args = parseToolArgs(arguments)
-        val path = arg(args, "path")
-        if (path.isBlank()) return jsonError("file_read", "path is required")
-        val serverName = arg(args, "server")
-        val offset = arg(args, "offset").toLongOrNull() ?: 0L
-        val limit = arg(args, "limit").toLongOrNull() ?: 0L
+    // ── SFTP transfer ──────────────────────────────────────
 
-        val backend = getBackend(serverName, ctx)
-            ?: return jsonError("file_read", serverNotFoundMessage(serverName, ctx))
-        try {
-            return backend.fileRead(path, offset, limit)
-        } finally {
-            backend.close()
+    private suspend fun executeUploadFile(
+        arguments: String,
+        ctx: GenerationContext,
+        onConnected: suspend (Long) -> Unit = {},
+    ): TimedToolOutcome {
+        val args = parseToolArgs(arguments)
+        val localPath = arg(args, "local_path")
+        if (localPath.isBlank()) {
+            return TimedToolOutcome(jsonError("upload_file_to_server", "local_path is required"))
         }
-    }
-
-    private suspend fun executeFileWrite(arguments: String, ctx: GenerationContext): String {
-        val args = parseToolArgs(arguments)
-        val path = arg(args, "path")
-        if (path.isBlank()) return jsonError("file_write", "path is required")
-        val content = arg(args, "content")
-        if (content.isBlank()) return jsonError("file_write", "content is required")
+        LocalDownloadTarget.uploadSourceReadable(localPath, context).exceptionOrNull()?.let {
+            return TimedToolOutcome(
+                jsonError("upload_file_to_server", it.message ?: "Cannot read local_path"),
+            )
+        }
+        val remotePath = arg(args, "remote_path")
+        if (remotePath.isBlank()) {
+            return TimedToolOutcome(jsonError("upload_file_to_server", "remote_path is required"))
+        }
         val serverName = arg(args, "server")
 
-        val backend = getBackend(serverName, ctx)
-            ?: return jsonError("file_write", serverNotFoundMessage(serverName, ctx))
-        try {
-            if (!confirmTarget(
-                    backend.device,
-                    "write file: $path",
-                    localSharedStorageExposed =
-                        backend.device == null && targetsSharedStorage(path),
+        val backend = getBackend(serverName, ctx) ?: return TimedToolOutcome(
+            jsonError(
+                "upload_file_to_server",
+                serverNotFoundMessage(serverName, ctx),
+                server = serverName,
+            ),
+        )
+        var connectMs: Long? = null
+        return try {
+            if (!confirmTarget(backend.device, "upload file: $localPath → $remotePath")) {
+                return TimedToolOutcome(
+                    jsonError(
+                        "upload_file_to_server",
+                        "denied_by_user: the user declined to upload this file",
+                        server = serverName,
+                    ),
                 )
-            ) {
-                return jsonError("file_write", "denied_by_user: the user declined to write this file", server = serverName)
             }
-            val error = backend.fileWrite(path, content)
-            if (error != null) return error
-            return buildJsonObject {
-                put("type", "file_write"); put("path", path); put("ok", true)
+            connectMs = backend.ensureSession()
+            onConnected(connectMs)
+            val startedAt = SystemClock.elapsedRealtime()
+            val error = backend.uploadFile(localPath, remotePath)
+            val text = error ?: buildJsonObject {
+                put("type", "upload_file_to_server")
+                put("server", backend.device.name)
+                put("local_path", localPath)
+                put("remote_path", remotePath)
+                put("ok", true)
             }.toString()
-        } finally {
-            backend.close()
-        }
-    }
-
-    private suspend fun executeFileEdit(arguments: String, ctx: GenerationContext): String {
-        val args = parseToolArgs(arguments)
-        val path = arg(args, "path")
-        if (path.isBlank()) return jsonError("file_edit", "path is required")
-        val oldStr = arg(args, "old_string")
-        if (oldStr.isBlank()) return jsonError("file_edit", "old_string is required")
-        val newStr = arg(args, "new_string")
-        val replaceAll = arg(args, "replace_all").equals("true", ignoreCase = true)
-        val serverName = arg(args, "server")
-
-        val backend = getBackend(serverName, ctx)
-            ?: return jsonError("file_edit", serverNotFoundMessage(serverName, ctx))
-        try {
-            if (!confirmTarget(
-                    backend.device,
-                    "edit file: $path",
-                    localSharedStorageExposed =
-                        backend.device == null && targetsSharedStorage(path),
-                )
-            ) {
-                return jsonError("file_edit", "denied_by_user: the user declined to edit this file", server = serverName)
-            }
-            // Read the file
-            val rawContent = try {
-                backend.fileRead(path, 0, 0)
-            } catch (e: Exception) {
-                return jsonError("file_edit", "read error: ${e.message}")
-            }
-            // Extract actual content (Conch wraps it in JSON, others return raw text)
-            val actualContent = try {
-                val obj = Json.parseToJsonElement(rawContent).jsonObject
-                (obj["content"] as? JsonPrimitive)?.content ?: rawContent
-            } catch (_: Exception) { rawContent }
-
-            val count = actualContent.split(oldStr).size - 1
-            if (count == 0) {
-                return jsonError("file_edit", "old_string not found in file")
-            }
-            if (count > 1 && !replaceAll) {
-                return jsonError("file_edit", "Found $count matches. Use replace_all=true or provide more context.")
-            }
-            val replaced = actualContent.replace(oldStr, newStr)
-            val writeError = backend.fileWrite(path, replaced)
-            if (writeError != null) {
-                return jsonError("file_edit", "write error: $writeError")
-            }
-            return buildJsonObject {
-                put("type", "file_edit"); put("path", path)
-                put("replaced", if (replaceAll) count else 1)
-            }.toString()
-        } finally {
-            backend.close()
-        }
-    }
-
-    private suspend fun executeFileGlob(arguments: String, ctx: GenerationContext): String {
-        val args = parseToolArgs(arguments)
-        val pattern = arg(args, "pattern")
-        if (pattern.isBlank()) return jsonError("file_glob", "pattern is required")
-        val serverName = arg(args, "server")
-        val basePath = arg(args, "path")
-        // Absent/blank → null → backward-compatible default behavior per backend.
-        val depth = arg(args, "depth").toIntOrNull()
-
-        val backend = getBackend(serverName, ctx)
-            ?: return jsonError("file_glob", serverNotFoundMessage(serverName, ctx))
-        try {
-            val result = backend.fileGlob(pattern, basePath, depth)
-            return result.fold(
-                onSuccess = { files ->
-                    buildJsonObject {
-                        put("type", "file_glob"); put("pattern", pattern)
-                        putJsonArray("files") { files.forEach { add(JsonPrimitive(it)) } }
-                    }.toString()
-                },
-                onFailure = { e -> jsonError("file_glob", e.message ?: "Unknown error") }
+            TimedToolOutcome(
+                text = text,
+                connectMs = connectMs,
+                execMs = SystemClock.elapsedRealtime() - startedAt,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            TimedToolOutcome(
+                text = jsonError(
+                    "upload_file_to_server",
+                    error.message ?: "Failed to upload file",
+                    server = backend.device.name,
+                ),
+                connectMs = connectMs,
             )
         } finally {
             backend.close()
         }
     }
 
-    private suspend fun executeFileGrep(arguments: String, ctx: GenerationContext): String {
+    private suspend fun executeDownloadFile(
+        arguments: String,
+        ctx: GenerationContext,
+        onConnected: suspend (Long) -> Unit = {},
+    ): TimedShellResult {
         val args = parseToolArgs(arguments)
-        val pattern = arg(args, "pattern")
-        if (pattern.isBlank()) return jsonError("file_grep", "pattern is required")
+        val remotePath = arg(args, "remote_path")
+        if (remotePath.isBlank()) {
+            return TimedShellResult(
+                ToolExecutionResult(
+                    text = jsonError("download_file", "remote_path is required"),
+                    isError = true,
+                ),
+            )
+        }
         val serverName = arg(args, "server")
-        val basePath = arg(args, "path")
-        val fileGlob = arg(args, "glob")
-
-        val backend = getBackend(serverName, ctx)
-            ?: return jsonError("file_grep", serverNotFoundMessage(serverName, ctx))
-        try {
-            val result = backend.fileGrep(pattern, basePath, fileGlob)
-            return result.fold(
-                onSuccess = { matches ->
-                    buildJsonObject {
-                        put("type", "file_grep"); put("pattern", pattern)
-                        putJsonArray("matches") {
-                            matches.forEach { m ->
-                                add(buildJsonObject {
-                                    put("path", m.path); put("line", m.line); put("content", m.content)
-                                })
-                            }
-                        }
-                    }.toString()
-                },
-                onFailure = { e -> jsonError("file_grep", e.message ?: "Unknown error") }
+        val backend = getBackend(serverName, ctx) ?: return TimedShellResult(
+            ToolExecutionResult(
+                text = jsonError(
+                    "download_file",
+                    serverNotFoundMessage(serverName, ctx),
+                    server = serverName,
+                ),
+                isError = true,
+            ),
+        )
+        val targetDir = arg(args, "target_dir")
+        val baseDownload = downloadsDir
+            ?: File(System.getProperty("java.io.tmpdir") ?: ".")
+        val localDir = LocalDownloadTarget.resolve(targetDir, baseDownload, context).getOrElse {
+            return TimedShellResult(
+                ToolExecutionResult(
+                    text = jsonError(
+                        "download_file",
+                        it.message ?: "Invalid target_dir",
+                        server = serverName,
+                    ),
+                    isError = true,
+                ),
+            )
+        }.absolutePath
+        var connectMs: Long? = null
+        return try {
+            if (!confirmTarget(backend.device, "download file: $remotePath → $localDir")) {
+                return TimedShellResult(
+                    ToolExecutionResult(
+                        text = jsonError(
+                            "download_file",
+                            "denied_by_user: the user declined to download this file",
+                            server = serverName,
+                        ),
+                        isError = true,
+                    ),
+                )
+            }
+            connectMs = backend.ensureSession()
+            onConnected(connectMs)
+            val startedAt = SystemClock.elapsedRealtime()
+            val dest = backend.downloadFile(remotePath, localDir)
+            val destFile = dest?.let { File(it) }
+            val result = if (destFile == null || !destFile.exists()) {
+                val detail = dest?.takeIf { it.contains("failed") || it.contains("error") }
+                    ?: "SFTP download failed"
+                ToolExecutionResult(
+                    text = jsonError("download_file", detail, server = backend.device.name),
+                    isError = true,
+                )
+            } else {
+                ToolExecutionResult(
+                    text = buildJsonObject {
+                        put("type", "download_file")
+                        put("server", backend.device.name)
+                        put("remote_path", remotePath)
+                        put("local_path", destFile.absolutePath)
+                        put("ok", true)
+                    }.toString(),
+                )
+            }
+            TimedShellResult(
+                result = result,
+                connectMs = connectMs,
+                execMs = SystemClock.elapsedRealtime() - startedAt,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            TimedShellResult(
+                result = ToolExecutionResult(
+                    text = jsonError(
+                        "download_file",
+                        error.message ?: "Failed to download file",
+                        server = backend.device.name,
+                    ),
+                    isError = true,
+                ),
+                connectMs = connectMs,
             )
         } finally {
             backend.close()
         }
-    }
-
-    companion object {
-        private const val JOB_ACK_TIMEOUT_MS = 3_000L
-
-        internal fun maxWaitMs(ctx: GenerationContext): Int =
-            ShellDurableJobExecutor.maxWaitMs(ctx)
     }
 }
+
+private data class TimedShellResult(
+    val result: ToolExecutionResult,
+    val connectMs: Long? = null,
+    val execMs: Long? = null,
+)
+
+
+
+

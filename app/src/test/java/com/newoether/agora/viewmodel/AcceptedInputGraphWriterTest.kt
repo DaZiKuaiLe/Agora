@@ -1,5 +1,6 @@
 package com.newoether.agora.viewmodel
 
+import com.newoether.agora.data.local.CompactMessageGraphRow
 import com.newoether.agora.data.local.MessageEntity
 import com.newoether.agora.data.local.RunEntity
 import com.newoether.agora.data.local.RunGraphCommit
@@ -22,8 +23,8 @@ class AcceptedInputGraphWriterTest {
         val root = message("root", null, Participant.USER, 1L, "old-run")
         val selected = message("selected", "root", Participant.MODEL, 2L, "selected-run")
         val newerSibling = message("newer", "root", Participant.MODEL, 3L, "other-run")
-        coEvery { repository.getMessagesForConversationSnapshot("conversation") } returns
-            listOf(root, selected, newerSibling)
+        coEvery { repository.getCompactMessageGraph("conversation") } returns
+            listOf(root, selected, newerSibling).map { it.toGraphRow() }
         coEvery { repository.restoreBranchSelections("conversation") } returns
             mapOf("root" to "selected")
 
@@ -113,6 +114,24 @@ class AcceptedInputGraphWriterTest {
         timestamp = timestamp,
         runId = runId,
         runSequence = timestamp,
+    )
+
+    private fun MessageEntity.toGraphRow() = CompactMessageGraphRow(
+        id = id,
+        conversationId = conversationId,
+        parentId = parentId,
+        participant = participant,
+        status = status,
+        timestamp = timestamp,
+        runId = runId,
+        runSequence = runSequence,
+        modelName = modelName,
+        consumedAtPass = consumedAtPass,
+        turnId = turnId,
+        compactLocked = compactLocked,
+        compactBatchId = compactBatchId,
+        compactDigestRev = compactDigestRev,
+        hasCompactDigest = !compactDigest.isNullOrBlank(),
     )
 
     private fun inputEffect(conversationId: String, runId: String) =

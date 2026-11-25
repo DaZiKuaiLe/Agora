@@ -26,6 +26,27 @@ import org.junit.Test
 
 class GenerationStopAdapterTest {
     @Test
+    fun requestStopMarksCooperativeFlagWithoutForceCutoff() {
+        val fixture = Fixture()
+        every { fixture.state.markCooperativeStopRequested() } returns true
+
+        fixture.adapter.requestVisibleConversationStop()
+
+        verify(exactly = 1) { fixture.state.markCooperativeStopRequested() }
+        verify(exactly = 0) { fixture.state.requestStop(any()) }
+    }
+
+    @Test
+    fun requestStopWithNoOpenConversationIsANoOp() {
+        val fixture = Fixture(currentConversationId = null)
+
+        fixture.adapter.requestVisibleConversationStop()
+
+        verify(exactly = 0) { fixture.state.markCooperativeStopRequested() }
+        verify(exactly = 0) { fixture.state.requestStop(any()) }
+    }
+
+    @Test
     fun noOpenConversationOrRuntimeIsANoOp() {
         val fixture = Fixture(currentConversationId = null)
 
@@ -118,6 +139,7 @@ class GenerationStopAdapterTest {
             finalizer = finalizer,
             failureText = { "failed" },
             onFailure = failures::add,
+            applyRenderUpdate = { it() },
         )
 
         init {

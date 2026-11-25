@@ -33,7 +33,9 @@ data class GenerationConfig(
     val maxTokens: Int? = null,
     val topP: Float? = null,
     val frequencyPenalty: Float? = null,
-    val presencePenalty: Float? = null
+    val presencePenalty: Float? = null,
+    /** Trailing original-band turn count (integration / archive retain). */
+    val contextRetainTurns: Int = 8,
 )
 
 /**
@@ -50,6 +52,8 @@ data class EffectiveGenerationSettings(
     val openAiWebSearchEnabled: Boolean,
     val webSearchEnabled: Boolean,
     val shellEnabled: Boolean,
+    /** Conversation Ask mode: read-only tools. Defaults on in the composer. */
+    val askMode: Boolean,
     val thinkingEnabled: Boolean,
     val thinkingLevel: String,
     val thinkingBudgetEnabled: Boolean,
@@ -91,6 +95,13 @@ data class GenerationContext(
     val shellDevices: List<com.newoether.agora.data.ShellDeviceConfig> = emptyList(),
     val sandboxEnabled: Boolean = false,
     val sandboxSharedStorageEnabled: Boolean = false,
+    /** Whether the local command tool (execute_local_command) is enabled. */
+    val localCommandEnabled: Boolean = false,
+    /**
+     * Read-only Ask mode. Default false here so unit-test contexts keep the full tool set
+     * unless they opt in. The composer default is on via [ConversationToolState.askModeEnabled].
+     */
+    val askMode: Boolean = false,
     val imageTranscriptionEnabled: Boolean = false,
     val imageTranscriptionModel: String? = null,
     val imageTranscriptionBatchSize: Int = 3,
@@ -109,6 +120,8 @@ internal data class AutomaticCompactConfig(
     val enabled: Boolean,
     /** Absolute token count at which automatic compaction fires. */
     val compactThreshold: Int,
+    /** Compact LLM `maxTokens` and residency freeze size; one user-facing number. */
+    val freezeThreshold: Int = ContextBudget.DEFAULT_FREEZE_THRESHOLD,
     val request: CompactRequest,
     val providerName: String,
     val apiKey: String,
@@ -198,6 +211,12 @@ internal data class GenerationCallbacks(
      *  each round boundary and ends the generation there so the queue can flush immediately
      *  (steering) instead of waiting out the entire loop. Headless runs keep the default. */
     val hasQueuedSends: () -> Boolean = { false },
+    /**
+     * Atomically take a cooperative Stop request. True means this turn should end at the
+     * current safe boundary without cancelling in-flight work. A leftover request at natural
+     * completion is consumed and discarded so it cannot affect the next turn.
+     */
+    val consumeCooperativeStop: () -> Boolean = { false },
     /** A validated Provider outcome is necessary but not sufficient: runtime identity must accept
      * the exact batch before any tool can execute. Defaults preserve the isolated headless test
      * adapter until Task ownership migrates fully in Phase 7. */

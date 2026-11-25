@@ -16,8 +16,10 @@ import com.newoether.agora.tool.ToolProvider
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -100,6 +102,95 @@ class GenerationToolBatchEffectExecutorTest {
 
         overlay.replaceAll(emptyList())
         assertNull(overlay.snapshot().singleOrNull())
+    }
+
+    @Test
+    fun localToolCardsAppearOnlyWhenThatCallStarts() {
+        val overlay = GenerationToolOverlay(
+            presentation = object : GenerationToolPresentationSource {
+                override fun presentationMetadata(name: String) = null
+            },
+            providerName = "provider",
+        )
+        data class Case(
+            val name: String,
+            val act: (GenerationToolOverlay) -> Unit,
+            val ids: List<String>,
+            val states: List<String>,
+        )
+        val cases = listOf(
+            Case(
+                "queued names never become cards",
+                { it.stopIncompleteTools() },
+                emptyList(),
+                emptyList(),
+            ),
+            Case(
+                "first start creates the running card",
+                { it.start(call("one", "one")) },
+                listOf("one"),
+                listOf(ToolExecutionStates.RUNNING),
+            ),
+            Case(
+                "later start does not rewrite the earlier card",
+                { it.start(call("two", "two")) },
+                listOf("one", "two"),
+                listOf(ToolExecutionStates.RUNNING, ToolExecutionStates.RUNNING),
+            ),
+            Case(
+                "stop marks started tools and does not invent a third",
+                { it.stopIncompleteTools() },
+                listOf("one", "two"),
+                listOf(ToolExecutionStates.STOPPED, ToolExecutionStates.STOPPED),
+            ),
+        )
+        cases.forEach { case ->
+            case.act(overlay)
+            val tools = overlay.snapshot().filter { it.type == "tool" }
+            assertEquals(case.name, case.ids, tools.map { it.toolCallId })
+            assertEquals(case.name, case.states, tools.map { it.toolState })
+        }
+    }
+
+    @Test
+    fun `tool timings stay on the segment and skip exec while a start process is still running`() {
+        val overlay = GenerationToolOverlay(
+            presentation = object : GenerationToolPresentationSource {
+                override fun presentationMetadata(name: String) = null
+            },
+            providerName = "provider",
+        )
+        val remote = call(id = "ssh", streamKey = "ssh").copy(name = "execute_remote_command")
+        overlay.upsert("ssh", "ssh", "execute_remote_command", "{}", null)
+        overlay.start(remote)
+        overlay.applyProgress("ssh", ToolExecutionEvent.Timing(connectMs = 320L))
+        overlay.applyProgress("ssh", ToolExecutionEvent.Timing(execMs = 1_200L))
+        val finished = overlay.complete(
+            remote,
+            ToolExecutionResult(text = """{"ok":true}"""),
+            nowMs = 99_000L,
+        )
+        assertEquals(320L, finished.segment.toolConnectMs)
+        assertEquals(1_200L, finished.segment.toolExecMs)
+        val finishedFields = Json.parseToJsonElement(finished.data.result).jsonObject
+        assertEquals(320L, finishedFields.getValue("connect_ms").jsonPrimitive.long)
+        assertEquals(1_200L, finishedFields.getValue("command_ms").jsonPrimitive.long)
+
+        val start = call(id = "start", streamKey = "start").copy(name = "start_remote_process")
+        overlay.upsert("start", "start", "start_remote_process", "{}", null)
+        overlay.start(start)
+        overlay.applyProgress("start", ToolExecutionEvent.Timing(connectMs = 210L))
+        val running = overlay.complete(
+            start,
+            ToolExecutionResult(text = """{"running":true,"process_id":"ssh:aa"}"""),
+            nowMs = 99_000L,
+        )
+        assertEquals(210L, running.segment.toolConnectMs)
+        assertNull(running.segment.toolExecMs)
+        assertEquals(ToolExecutionStates.BACKGROUND_RUNNING, running.segment.toolState)
+        val runningFields = Json.parseToJsonElement(running.data.result).jsonObject
+        assertEquals(210L, runningFields.getValue("connect_ms").jsonPrimitive.long)
+        assertEquals(false, "command_ms" in runningFields)
     }
 
     @Test
@@ -199,7 +290,6 @@ class GenerationToolBatchEffectExecutorTest {
         var now = 0L
         val executor = GenerationToolBatchEffectExecutor(tools) { now += 100L; now }
         val overlay = GenerationToolOverlay(tools, "provider")
-        overlay.upsert("stream", "call", "tool", "{}", null)
         val forces = mutableListOf<Boolean>()
         val publishedAt = mutableListOf<Long>()
 
@@ -228,14 +318,56 @@ class GenerationToolBatchEffectExecutorTest {
     }
 
     @Test
+    fun serialBatchRevealsTheNextCardOnlyWhenThatCallStarts() = runTest {
+        val provider = StreamingToolProvider()
+        val tools = GenerationToolExecutor.forTest(listOf(provider))
+        var now = 0L
+        val executor = GenerationToolBatchEffectExecutor(tools) { now += 100L; now }
+        val overlay = GenerationToolOverlay(tools, "provider")
+        val revealed = mutableListOf<List<String>>()
+
+        executor.execute(
+            request = AuthorizedToolBatchRequest(
+                effect = RunEffect.ExecuteToolBatch(IDENTITY),
+                calls = listOf(call("one", "one"), call("two", "two")),
+                context = GenerationContext(),
+                conversationId = "conversation",
+                authorizedToolNames = setOf("tool"),
+            ),
+            overlay = overlay,
+            callbacks = ToolBatchProgressCallbacks(
+                publish = {
+                    revealed += overlay.snapshot()
+                        .filter { it.type == "tool" }
+                        .map { "${it.toolCallId}:${it.toolState}" }
+                },
+                onPublishedAt = {},
+            ),
+        )
+
+        assertEquals(listOf("one:running"), revealed.first())
+        assertTrue(revealed.any { it == listOf("one:succeeded") })
+        assertTrue(
+            revealed.any {
+                it.size == 2 &&
+                    it[0] == "one:succeeded" &&
+                    it[1].startsWith("two:")
+            },
+        )
+        assertEquals(
+            listOf("one:succeeded", "two:succeeded"),
+            overlay.snapshot().filter { it.type == "tool" }
+                .map { "${it.toolCallId}:${it.toolState}" },
+        )
+    }
+
+    @Test
     fun `declared tool images are transcribed into consecutive thinking segments without polluting the result`() = runTest {
         val provider = ImageResultToolProvider()
         val tools = GenerationToolExecutor.forTest(listOf(provider))
         var now = 0L
         val executor = GenerationToolBatchEffectExecutor(tools) { now += 100L; now }
         val overlay = GenerationToolOverlay(tools, "provider")
-        overlay.upsert("stream-a", "call-a", "tool", "{\"path\":\"/private/a.png\"}", null)
-        overlay.upsert("stream-b", "call-b", "tool", "{\"path\":\"/private/b.png\"}", null)
         val transcribed = mutableListOf<String>()
         val progress = mutableListOf<String>()
 
@@ -307,7 +439,6 @@ class GenerationToolBatchEffectExecutorTest {
         var now = 0L
         val executor = GenerationToolBatchEffectExecutor(tools) { now += 100L; now }
         val overlay = GenerationToolOverlay(tools, "provider")
-        overlay.upsert("stream", "call", "tool", "{\"path\":\"/private/a.png\"}", null)
 
         val outcome = executor.execute(
             request = AuthorizedToolBatchRequest(

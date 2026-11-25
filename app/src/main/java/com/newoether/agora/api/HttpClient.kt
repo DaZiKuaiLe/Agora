@@ -255,6 +255,7 @@ object HttpClient {
         private val scope: com.newoether.agora.viewmodel.StreamScope?,
         private val trace: RequestTrace?,
         private val diagnosticContext: DiagnosticRequestContext?,
+        private val responseCapture: ApiResponseCapture?,
     ) : com.newoether.agora.viewmodel.GenerationCancelHandle {
         private val response = AtomicReference<okhttp3.Response?>(null)
         private val cancelled = AtomicBoolean(false)
@@ -269,6 +270,7 @@ object HttpClient {
                 val openedResponse = response.get()
                 val body = openedResponse?.body?.string()
                 if (openedResponse != null && body != null) {
+                    responseCapture?.appendRaw(body)
                     DeveloperDiagnostics.recordHttpResponseBody(
                         context = diagnosticContext,
                         code = openedResponse.code,
@@ -306,6 +308,7 @@ object HttpClient {
         fun readLine(): String? {
             val line = source?.readUtf8Line()
             if (line != null) {
+                responseCapture?.appendLine(line)
                 DeveloperDiagnostics.recordWireLine(
                     context = diagnosticContext,
                     lineNumber = wireLineNumber.incrementAndGet(),
@@ -335,8 +338,13 @@ object HttpClient {
         }
     }
 
-    fun streamPost(url: String, jsonBody: String, headers: Map<String, String> = emptyMap()): StreamHandle =
-        streamPost(url, jsonBody, headers, scope = boundStreamScope())
+    fun streamPost(
+        url: String,
+        jsonBody: String,
+        headers: Map<String, String> = emptyMap(),
+        responseCapture: ApiResponseCapture? = null,
+    ): StreamHandle =
+        streamPost(url, jsonBody, headers, scope = boundStreamScope(), responseCapture = responseCapture)
 
     /**
      * Open a streaming POST. If [scope] is non-null, the handle is registered there so a
@@ -353,7 +361,9 @@ object HttpClient {
         jsonBody: String,
         headers: Map<String, String> = emptyMap(),
         scope: com.newoether.agora.viewmodel.StreamScope?,
+        responseCapture: ApiResponseCapture? = null,
     ): StreamHandle {
+        responseCapture?.clear()
         guardCleartextCredentials(url, headers)
         val trace = boundRequestTrace()
         val diagnosticContext = trace?.beginHttpExchange()
@@ -371,7 +381,7 @@ object HttpClient {
             .tag(RequestTrace::class.java, trace)
             .build()
         val call = client.newCall(request)
-        val handle = StreamHandle(call, scope, trace, diagnosticContext)
+        val handle = StreamHandle(call, scope, trace, diagnosticContext, responseCapture)
         // Register before execute(): Stop must be able to cancel DNS, connect, TLS, request upload,
         // and response-header wait rather than only an already-open response body.
         if (scope != null) scope.register(handle)

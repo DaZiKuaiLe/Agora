@@ -210,7 +210,12 @@ abstract class BaseOpenAiProvider : LlmProvider {
                     // so a single flaky connection became a hard failure. Nothing has streamed at
                     // this point, so replaying is always safe.
                     val handle = try {
-                        HttpClient.streamPost(endpointUrl, requestBodyJson, headers)
+                        HttpClient.streamPost(
+                            endpointUrl,
+                            requestBodyJson,
+                            headers,
+                            responseCapture = config.apiResponseCapture,
+                        )
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -257,6 +262,7 @@ abstract class BaseOpenAiProvider : LlmProvider {
                                 delay(retryDelayMs)
                                 retryScheduled = true
                             } else {
+                                emit(StreamEvent.Completion(termination.stopReason))
                                 termination.toError(name)?.let { emit(StreamEvent.Error(it)) }
                                 finished = true
                             }

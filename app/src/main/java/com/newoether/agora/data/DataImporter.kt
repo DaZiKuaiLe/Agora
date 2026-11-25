@@ -416,7 +416,6 @@ class DataImporter(
                                 memoryManager.updateActiveMemory("", "replace")
                             }
                         }
-                        val existingNames = memoryManager.listFiles().map { it.name }.toSet()
                         val existingSkillNames = skillManager.listFiles().map { it.name }.toSet()
                         for (path in memNames) {
                             val text = opened.bytes(path)?.decodeToString() ?: continue
@@ -429,14 +428,6 @@ class DataImporter(
                                         memoryManager.updateActiveMemory(text, "replace")
                                     }
                                     memoriesImported++
-                                }
-                                path == "memories/memory_db/memory_meta.json" -> {
-                                    if (
-                                        memDecision == ImportStrategy.REPLACE ||
-                                        memoryManager.getMetaJson() == "{}"
-                                    ) {
-                                        memoryManager.saveMetaJson(text)
-                                    }
                                 }
                                 path == "memories/skill_db/skill_meta.json" -> {
                                     if (
@@ -456,20 +447,6 @@ class DataImporter(
                                             skillManager.createFile(name, text)
                                         } catch (_: Exception) {
                                             skillManager.editFile(name, content = text)
-                                        }
-                                    }
-                                    memoriesImported++
-                                }
-                                path.startsWith("memories/memory_db/") -> {
-                                    val name = path.removePrefix("memories/memory_db/")
-                                    if (
-                                        memDecision == ImportStrategy.REPLACE ||
-                                        name !in existingNames
-                                    ) {
-                                        try {
-                                            memoryManager.createFile(name, text)
-                                        } catch (_: Exception) {
-                                            memoryManager.editFile(name, text)
                                         }
                                     }
                                     memoriesImported++

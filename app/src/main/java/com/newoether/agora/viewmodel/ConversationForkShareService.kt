@@ -9,6 +9,7 @@ import com.newoether.agora.data.repository.SettingsRepository
 import com.newoether.agora.model.AttachmentMeta
 import com.newoether.agora.model.MessageSegment
 import com.newoether.agora.model.Participant
+import com.newoether.agora.model.isProcessCompletionNoticeId
 import com.newoether.agora.util.Constants
 import com.newoether.agora.util.DebugLog
 import kotlinx.coroutines.CancellationException
@@ -56,17 +57,13 @@ class ConversationForkShareService(
     ): ForkResult {
         val source = conversations.getConversation(conversationId)
             ?: return ForkResult.Failure("Conversation not found")
-        val sourceMessages = conversations.getMessagesForConversationSnapshot(conversationId)
-        val allRuns = conversations.getRunsForConversationSnapshot(conversationId)
-        val selectedChildren = conversations.restoreBranchSelections(conversationId)
-        val selection = resolveConversationBranchPath(
-            messages = sourceMessages,
-            runs = allRuns,
-            selectedChildren = selectedChildren,
-            throughMessageId = throughMessageId,
-        ) ?: return ForkResult.Failure(
-            "The selected branch is incomplete or contains a broken parent link"
-        )
+        val hydrated = hydrateSelectedBranch(conversationId, throughMessageId)
+            ?: return ForkResult.Failure(
+                "The selected branch is incomplete or contains a broken parent link"
+            )
+        val allRuns = hydrated.runs
+        val selectedChildren = hydrated.selectedChildren
+        val selection = hydrated.branch
         if (selection.runIds.isEmpty()) {
             return ForkResult.Failure("Conversation has no completed run")
         }
@@ -168,6 +165,10 @@ class ConversationForkShareService(
             origin = "user",
             graduated = false,
             selectedRunBranchesJson = explicitRunSelections.encodeSelections(),
+            digestActiveMemoryRev = source.digestActiveMemoryRev,
+            digestPromptRev = source.digestPromptRev,
+            digestPromptId = source.digestPromptId,
+            compactFormatRev = source.compactFormatRev,
         )
         val clonedSelection = resolveConversationBranchPath(
             messages = clonedMessages,
@@ -263,19 +264,48 @@ class ConversationForkShareService(
 
     private suspend fun shareSnapshot(conversationId: String): ShareSnapshot? {
         val conversation = conversations.getConversation(conversationId) ?: return null
-        val messages = conversations.getMessagesForConversationSnapshot(conversationId)
-        val runs = conversations.getRunsForConversationSnapshot(conversationId)
-        val branch = resolveConversationBranchPath(
-            messages = messages,
-            runs = runs,
-            selectedChildren = conversations.restoreBranchSelections(conversationId),
-        ) ?: return null
+        val hydrated = hydrateSelectedBranch(conversationId) ?: return null
         return ShareSnapshot(
             title = conversation.title,
-            runsById = runs.associateBy { it.id },
-            branch = branch,
+            runsById = hydrated.runs.associateBy { it.id },
+            branch = hydrated.branch,
         )
     }
+
+    private suspend fun hydrateSelectedBranch(
+        conversationId: String,
+        throughMessageId: String? = null,
+    ): HydratedConversationBranch? {
+        val graph = conversations.getCompactMessageGraph(conversationId)
+        val runs = conversations.getRunsForConversationSnapshot(conversationId)
+        val selectedChildren = conversations.restoreBranchSelections(conversationId)
+        val identity = resolveConversationBranchPath(
+            messages = graph.map { it.toStubMessageEntity() },
+            runs = runs,
+            selectedChildren = selectedChildren,
+            throughMessageId = throughMessageId,
+        ) ?: return null
+        val structuralIds = identity.structuralMessages.map { it.id }
+        val hydrated = conversations.getMessagesByIds(structuralIds).associateBy { it.id }
+        if (structuralIds.any { it !in hydrated }) return null
+        fun relist(messages: List<MessageEntity>): List<MessageEntity> =
+            messages.map { stub -> hydrated.getValue(stub.id) }
+        return HydratedConversationBranch(
+            runs = runs,
+            selectedChildren = selectedChildren,
+            branch = identity.copy(
+                selectedPathMessages = relist(identity.selectedPathMessages),
+                structuralMessages = relist(identity.structuralMessages),
+                visibleMessages = relist(identity.visibleMessages),
+            ),
+        )
+    }
+
+    private data class HydratedConversationBranch(
+        val runs: List<RunEntity>,
+        val selectedChildren: Map<String?, String>,
+        val branch: ConversationBranchPath,
+    )
 
     private fun renderShare(
         snapshot: ShareSnapshot,
@@ -326,7 +356,7 @@ internal fun formatShareText(title: String, messages: List<MessageEntity>): Stri
     title.trim().takeIf { it.isNotBlank() }?.let { blocks += "# $it" }
 
     messages.forEach { message ->
-        if (message.isSynthetic()) {
+        if (message.isSynthetic() || message.id.isProcessCompletionNoticeId()) {
             return@forEach
         }
         when (message.participant) {
@@ -407,5 +437,7 @@ internal fun remapForkMessageId(
         "${Constants.TOOL_MSG_PREFIX}$generatedId"
     sourceMessageId.startsWith(Constants.RESULT_MSG_PREFIX) ->
         "${Constants.RESULT_MSG_PREFIX}$generatedId"
+    sourceMessageId.startsWith(Constants.PROCESS_NOTICE_MSG_PREFIX) ->
+        "${Constants.PROCESS_NOTICE_MSG_PREFIX}$generatedId"
     else -> generatedId
 }

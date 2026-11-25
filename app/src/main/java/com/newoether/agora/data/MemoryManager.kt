@@ -14,11 +14,16 @@ class MemoryManager(context: Context) {
     private val activeMemoryFile: File =
         File(context.filesDir, "active_memory.md")
 
+    private val activeMemoryRevFile: File =
+        File(context.filesDir, "active_memory.rev")
+
     private val metaFile: File =
         File(memoryDir, "memory_meta.json")
 
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
-    private val _activeMemoryRevision = MutableStateFlow(0L)
+    private val _activeMemoryRevision = MutableStateFlow(
+        activeMemoryRevFile.takeIf { it.exists() }?.readText()?.trim()?.toLongOrNull() ?: 0L
+    )
     val activeMemoryRevision = _activeMemoryRevision.asStateFlow()
 
     data class MemoryFileInfo(
@@ -63,8 +68,29 @@ class MemoryManager(context: Context) {
                 "Active memory updated."
             }
         }
-        _activeMemoryRevision.value += 1
+        bumpActiveMemoryRev()
         return result
+    }
+
+    @Synchronized
+    fun getActiveMemoryRev(): Long = _activeMemoryRevision.value
+
+    /**
+     * Old installs may have `active_memory.md` without `active_memory.rev`.
+     * One bump so digest snapshots can distinguish "never versioned" from current content.
+     */
+    @Synchronized
+    fun ensureRevisionForExistingContent() {
+        if (getActiveMemory().trim().isEmpty()) return
+        if (_activeMemoryRevision.value != 0L) return
+        bumpActiveMemoryRev()
+    }
+
+    @Synchronized
+    private fun bumpActiveMemoryRev() {
+        val next = _activeMemoryRevision.value + 1
+        activeMemoryRevFile.writeText(next.toString())
+        _activeMemoryRevision.value = next
     }
 
     @Synchronized

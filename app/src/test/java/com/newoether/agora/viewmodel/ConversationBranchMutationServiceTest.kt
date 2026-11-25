@@ -1,6 +1,7 @@
-package com.newoether.agora.viewmodel
+﻿package com.newoether.agora.viewmodel
 
 import com.newoether.agora.automation.ConversationExecutionCoordinator
+import com.newoether.agora.data.local.CompactMessageGraphRow
 import com.newoether.agora.data.local.MessageEntity
 import com.newoether.agora.data.local.RunEntity
 import com.newoether.agora.data.repository.ConversationRepository
@@ -36,9 +37,9 @@ class ConversationBranchMutationServiceTest {
             events += "remove"
             true
         }
-        coEvery { conversations.getMessagesForConversationSnapshot("conversation") } coAnswers {
-            events += "snapshot"
-            listOf(remaining, offPathTail)
+        coEvery { conversations.getCompactMessageGraph("conversation") } coAnswers {
+            events += "graph"
+            listOf(remaining.toGraphRow(), offPathTail.toGraphRow())
         }
         coEvery { conversations.restoreBranchSelections("conversation") } coAnswers {
             events += "selections"
@@ -66,7 +67,7 @@ class ConversationBranchMutationServiceTest {
                 "start:false",
                 "live-check",
                 "remove",
-                "snapshot",
+                "graph",
                 "selections",
                 "project:user, off-path-tail",
                 "settle:null",
@@ -74,6 +75,7 @@ class ConversationBranchMutationServiceTest {
             events,
         )
         assertEquals(emptyList<Long?>(), failed)
+        coVerify(exactly = 0) { conversations.getUiMessagesByIds(any(), any()) }
         state.dispose()
         Unit
     }
@@ -87,8 +89,10 @@ class ConversationBranchMutationServiceTest {
         coEvery { conversations.getLiveRun("conversation") } returns null
         coEvery { conversations.getRunsForConversationSnapshot("conversation") } returns
             listOf(run())
-        coEvery { conversations.getMessagesForConversationSnapshot("conversation") } returns
-            listOf(user, model)
+        coEvery { conversations.getCompactMessageGraph("conversation") } returns
+            listOf(user.toGraphRow(), model.toGraphRow())
+        coEvery { conversations.getMessageAttachmentReferencesByIds(listOf("model")) } returns
+            emptyList()
         coEvery { conversations.restoreBranchSelections("conversation") } returns
             mapOf("user" to "model")
         coEvery { conversations.restoreRunBranchSelections("conversation") } returns emptyMap()
@@ -106,7 +110,7 @@ class ConversationBranchMutationServiceTest {
             events += "room-commit"
             true
         }
-        coEvery { conversations.deleteMessageFiles(any()) } coAnswers {
+        coEvery { conversations.deleteMessageAttachmentFiles(any()) } coAnswers {
             events += "file-delete"
         }
         val service = service(conversations, events)
@@ -125,6 +129,7 @@ class ConversationBranchMutationServiceTest {
             listOf("start:true", "room-commit", "file-delete", "project:user", "settle:user"),
             events,
         )
+        coVerify(exactly = 0) { conversations.deleteMessageFiles(any()) }
         state.dispose()
         Unit
     }
@@ -157,9 +162,6 @@ class ConversationBranchMutationServiceTest {
         scope = this,
         conversations = conversations,
         executionCoordinator = ConversationExecutionCoordinator(),
-        toUiMessage = { entity ->
-            chat(entity.id, entity.parentId, entity.participant)
-        },
         isConversationOpen = { true },
         projectGraph = { messages, _ -> events += "project:${messages.joinToString { it.id }}" },
         onMutationStart = { scrollToTarget ->
@@ -185,6 +187,24 @@ class ConversationBranchMutationServiceTest {
         timestamp = sequence + 1,
         runId = "run",
         runSequence = sequence,
+    )
+
+    private fun MessageEntity.toGraphRow() = CompactMessageGraphRow(
+        id = id,
+        conversationId = conversationId,
+        parentId = parentId,
+        participant = participant,
+        status = status,
+        timestamp = timestamp,
+        runId = runId,
+        runSequence = runSequence,
+        modelName = modelName,
+        consumedAtPass = consumedAtPass,
+        turnId = turnId,
+        compactLocked = compactLocked,
+        compactBatchId = compactBatchId,
+        compactDigestRev = compactDigestRev,
+        hasCompactDigest = !compactDigest.isNullOrBlank(),
     )
 
     private fun chat(id: String, parentId: String?, participant: Participant) = ChatMessage(

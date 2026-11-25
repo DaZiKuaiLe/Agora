@@ -57,6 +57,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.newoether.agora.data.SettingsManager
 import com.newoether.agora.service.AgoraForegroundService
 import com.newoether.agora.service.AppForegroundTracker
+import com.newoether.agora.ui.AllFilesAccessStartupPrompt
+import com.newoether.agora.ui.AllFilesAccessToolRequestDialog
 import com.newoether.agora.ui.chat.ChatApp
 import com.newoether.agora.ui.chat.FullScreenMediaPreviewDialog
 import com.newoether.agora.ui.chat.message.ChatMarkdownCodeBlock
@@ -89,16 +91,6 @@ class MainActivity : ComponentActivity() {
         val locale = when (langCode) {
             "zh" -> java.util.Locale("zh", "CN")
             "en" -> java.util.Locale("en")
-            "es" -> java.util.Locale("es")
-            "fr" -> java.util.Locale("fr")
-            "de" -> java.util.Locale("de")
-            "ru" -> java.util.Locale("ru")
-            "pt-BR" -> java.util.Locale("pt", "BR")
-            "ja" -> java.util.Locale("ja")
-            "ko" -> java.util.Locale("ko")
-            "ar" -> java.util.Locale("ar")
-            "vi" -> java.util.Locale("vi")
-            "zh-Hant" -> java.util.Locale.forLanguageTag("zh-Hant")
             else -> null
         }
         if (locale != null) {
@@ -491,6 +483,15 @@ fun MainNavigation(
         )
     }
 
+    val pendingAllFilesAccess by viewModel.pendingAllFilesAccessRequest.collectAsState()
+    pendingAllFilesAccess?.let { pending ->
+        AllFilesAccessToolRequestDialog(
+            reason = pending.reason,
+            onDismiss = { viewModel.dismissAllFilesAccessRequest() },
+            onSettingsAttemptFinished = { viewModel.resolveAllFilesAccessAfterSettings() },
+        )
+    }
+
     // Crash report — opt-in, shown once on the first launch after an unexpected exit
     val crashContext = LocalContext.current
     var pendingCrash by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -499,7 +500,21 @@ fun MainNavigation(
         pendingCrash = withContext(Dispatchers.IO) {
             CrashReporter.pendingReport(crashContext)?.let { report ->
                 val trace = runCatching {
-                    org.json.JSONObject(report).optString("trace", "")
+                    val json = org.json.JSONObject(report)
+                    val stack = json.optString("trace", "")
+                    val crumbs = json.optJSONArray("breadcrumbs")
+                    if (crumbs == null || crumbs.length() == 0) {
+                        stack
+                    } else {
+                        buildString {
+                            append(stack)
+                            append("\n\nbreadcrumbs:\n")
+                            for (index in 0 until crumbs.length()) {
+                                append(crumbs.optString(index))
+                                append('\n')
+                            }
+                        }
+                    }
                 }.getOrDefault("")
                 report to trace
             }
@@ -719,6 +734,7 @@ fun MainNavigation(
         color = MaterialTheme.colorScheme.background
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
+            AllFilesAccessStartupPrompt()
             ChatApp(
                 viewModel = viewModel,
                 onNavigateBack = taskHistoryPreview.taskId

@@ -1,5 +1,6 @@
-package com.newoether.agora.viewmodel
+﻿package com.newoether.agora.viewmodel
 
+import com.newoether.agora.data.local.CompactMessageGraphRow
 import com.newoether.agora.data.local.MessageEntity
 import com.newoether.agora.data.repository.ConversationRepository
 import com.newoether.agora.model.ChatMessage
@@ -7,6 +8,7 @@ import com.newoether.agora.model.MessageSegment
 import com.newoether.agora.model.MessageStatus
 import com.newoether.agora.model.Participant
 import com.newoether.agora.util.Constants
+import com.newoether.agora.tool.DetailStore
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -17,8 +19,33 @@ import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import android.content.Context
+import kotlin.io.path.createTempDirectory
 
 class ConversationContextProjectorTest {
+    private fun projector(
+        conversations: ConversationRepository,
+        requestBuilder: GenerationRequestBuilder,
+        generationManager: GenerationManager,
+        toBranchMessage: (MessageEntity) -> ChatMessage =
+            { it.toUiChatMessage { text -> text } },
+        newChatSystemPromptId: () -> String? = { null },
+    ): ConversationContextProjector {
+        val context = mockk<Context>(relaxed = true)
+        every { context.getString(any()) } returns "summary"
+        every { context.getString(any(), *anyVararg()) } returns "summary"
+        return ConversationContextProjector(
+            conversations = conversations,
+            requestBuilder = requestBuilder,
+            generationManager = { generationManager },
+            toBranchMessage = toBranchMessage,
+            detailStore = { DetailStore(createTempDirectory("ctx-detail").toFile()) },
+            appContext = context,
+            newChatSystemPromptId = newChatSystemPromptId,
+            computeDispatcher = kotlinx.coroutines.Dispatchers.Unconfined,
+        )
+    }
+
     @Test
     fun newChatProjectionIncludesTheCurrentlySelectedSystemPromptAndToolCost() = runTest {
         val conversations = mockk<ConversationRepository>()
@@ -36,10 +63,10 @@ class ConversationContextProjectorTest {
             )
         } returns snapshot
         every { generationManager.fixedContextTokenCost(snapshot.config, snapshot.context) } returns 221
-        val projector = ConversationContextProjector(
+        val projector = projector(
             conversations = conversations,
             requestBuilder = requestBuilder,
-            generationManager = { generationManager },
+            generationManager = generationManager,
             toBranchMessage = { error("New Chat has no durable messages") },
             newChatSystemPromptId = { "prompt-selected-for-new-chat" },
         )
@@ -55,7 +82,8 @@ class ConversationContextProjectorTest {
                 "prompt-selected-for-new-chat",
             )
         }
-        coVerify(exactly = 0) { conversations.getMessagesForConversationSnapshot(any()) }
+        coVerify(exactly = 0) { conversations.getCompactMessageGraph(any()) }
+        coVerify(exactly = 0) { conversations.getMessagesByIds(any()) }
         coVerify(exactly = 0) { conversations.restoreBranchSelections(any()) }
     }
 
@@ -100,8 +128,14 @@ class ConversationContextProjectorTest {
                 ),
             ),
         )
-        coEvery { conversations.getMessagesForConversationSnapshot("conversation") } returns
-            listOf(user, model, tool, result)
+        val entities = listOf(user, model, tool, result)
+        coEvery { conversations.getCompactMessageGraph("conversation") } returns
+            entities.map { it.toGraphRow() }
+        coEvery { conversations.getMessagesByIds(any()) } answers {
+            val ids = firstArg<List<String>>().toSet()
+            entities.filter { it.id in ids }
+        }
+        coEvery { conversations.getCompactDigest(any()) } returns null
         coEvery { conversations.restoreBranchSelections("conversation") } returns emptyMap()
         val admission = testGenerationAdmissionSnapshot(conversationId = "conversation")
         val snapshot = GenerationContextProjectionSnapshot(admission.config, admission.context)
@@ -109,10 +143,10 @@ class ConversationContextProjectorTest {
             requestBuilder.captureContextProjectionSnapshot("conversation", "provider:model", null)
         } returns snapshot
         every { generationManager.fixedContextTokenCost(snapshot.config, snapshot.context) } returns 137
-        val projector = ConversationContextProjector(
+        val projector = projector(
             conversations = conversations,
             requestBuilder = requestBuilder,
-            generationManager = { generationManager },
+            generationManager = generationManager,
             toBranchMessage = { entity ->
                 ChatMessage(
                     id = entity.id,
@@ -133,6 +167,24 @@ class ConversationContextProjectorTest {
         assertTrue(tool.id in projection.retainedMessageIds)
         assertTrue(result.id in projection.retainedMessageIds)
     }
+
+    private fun MessageEntity.toGraphRow() = CompactMessageGraphRow(
+        id = id,
+        conversationId = conversationId,
+        parentId = parentId,
+        participant = participant,
+        status = status,
+        timestamp = timestamp,
+        runId = runId,
+        runSequence = runSequence,
+        modelName = modelName,
+        consumedAtPass = consumedAtPass,
+        turnId = turnId,
+        compactLocked = compactLocked,
+        compactBatchId = compactBatchId,
+        compactDigestRev = compactDigestRev,
+        hasCompactDigest = !compactDigest.isNullOrBlank(),
+    )
 
     private fun entity(
         id: String,

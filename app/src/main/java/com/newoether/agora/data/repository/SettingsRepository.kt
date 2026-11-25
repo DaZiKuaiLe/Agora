@@ -6,7 +6,7 @@ import com.newoether.agora.model.ContextBudget
 import com.newoether.agora.data.ApiKeyEntry
 import com.newoether.agora.data.BuiltInPrompts
 import com.newoether.agora.data.DEFAULT_CONTEXT_COMPACT_ENABLED
-import com.newoether.agora.data.DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT
+import com.newoether.agora.data.DEFAULT_CONTEXT_COMPACT_BATCH_SIZE
 import com.newoether.agora.data.ConversationToolState
 import com.newoether.agora.data.ModelGenerationSettings
 import com.newoether.agora.data.CustomEndpointProtocol
@@ -126,10 +126,18 @@ class SettingsRepository(
         DEFAULT_CONTEXT_COMPACT_ENABLED,
     )
     val contextCompactModel: StateFlow<String?> = hot(settingsManager.contextCompactModel, null)
-    val contextCompactPrompt: StateFlow<String> = hot(settingsManager.contextCompactPrompt, BuiltInPrompts.CONTEXT_COMPACT_SYSTEM)
-    val contextCompactRetainCount: StateFlow<Int> = hot(
-        settingsManager.contextCompactRetainCount,
-        DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT,
+    val contextCompactPrompt: StateFlow<String> = hot(
+        settingsManager.contextCompactPrompt,
+        BuiltInPrompts.CONTEXT_COMPACT_SYSTEM,
+    )
+    val contextCompactBatchSize: StateFlow<Int> = hot(
+        settingsManager.contextCompactBatchSize,
+        DEFAULT_CONTEXT_COMPACT_BATCH_SIZE,
+    )
+    val contextCompactRetainCount: StateFlow<Int> = contextCompactBatchSize
+    val contextCompactFreezeThreshold: StateFlow<Int> = hot(
+        settingsManager.contextCompactFreezeThreshold,
+        ContextBudget.DEFAULT_FREEZE_THRESHOLD,
     )
     val codeExecutionEnabled: StateFlow<Boolean> = hot(settingsManager.codeExecutionEnabled, false)
     val googleSearchEnabled: StateFlow<Boolean> = hot(settingsManager.googleSearchEnabled, false)
@@ -194,6 +202,7 @@ class SettingsRepository(
     val sandboxEnabled: StateFlow<Boolean> = hot(settingsManager.sandboxEnabled, false)
     val sandboxSharedStorageEnabled: StateFlow<Boolean> =
         hot(settingsManager.sandboxSharedStorageEnabled, false)
+    val localCommandEnabled: StateFlow<Boolean> = hot(settingsManager.localCommandEnabled, false)
     val defaultTemperature: StateFlow<Float?> = hot(settingsManager.defaultTemperature, null)
     val defaultMaxTokens: StateFlow<Int?> = hot(settingsManager.defaultMaxTokens, null)
     val defaultTopP: StateFlow<Float?> = hot(settingsManager.defaultTopP, null)
@@ -360,7 +369,16 @@ class SettingsRepository(
         userPrependItems: List<PromptTemplateItem>, userPostpendItems: List<PromptTemplateItem>
     ) {
         scope.launch {
-            settingsManager.saveSystemPrompts(systemPrompts.value.map { if (it.id == id) it.copy(title = title, content = "", systemItems = systemItems, userPrependItems = userPrependItems, userPostpendItems = userPostpendItems) else it })
+            settingsManager.saveSystemPrompts(systemPrompts.value.map {
+                if (it.id == id) it.copy(
+                    title = title,
+                    content = "",
+                    systemItems = systemItems,
+                    userPrependItems = userPrependItems,
+                    userPostpendItems = userPostpendItems,
+                    rev = it.rev + 1,
+                ) else it
+            })
         }
     }
 
@@ -512,7 +530,10 @@ class SettingsRepository(
     fun setContextCompactEnabled(enabled: Boolean) = scope.launch { settingsManager.saveContextCompactEnabled(enabled) }
     fun setContextCompactModel(model: String?) = scope.launch { settingsManager.saveContextCompactModel(model) }
     fun setContextCompactPrompt(prompt: String) = scope.launch { settingsManager.saveContextCompactPrompt(prompt) }
-    fun setContextCompactRetainCount(count: Int) = scope.launch { settingsManager.saveContextCompactRetainCount(count) }
+    fun setContextCompactBatchSize(count: Int) = scope.launch { settingsManager.saveContextCompactBatchSize(count) }
+    fun setContextCompactRetainCount(count: Int) = setContextCompactBatchSize(count)
+    fun setContextCompactFreezeThreshold(tokens: Int) =
+        scope.launch { settingsManager.saveContextCompactFreezeThreshold(tokens) }
 
     fun setTitleGenerationModel(model: String?) = scope.launch { settingsManager.saveTitleGenerationModel(model) }
     fun setTitleGenerationPrompt(prompt: String) = scope.launch { settingsManager.saveTitleGenerationPrompt(prompt) }
@@ -557,6 +578,8 @@ class SettingsRepository(
     fun setSandboxEnabled(enabled: Boolean) = scope.launch { settingsManager.saveSandboxEnabled(enabled) }
     fun setSandboxSharedStorageEnabled(enabled: Boolean) =
         scope.launch { settingsManager.saveSandboxSharedStorageEnabled(enabled) }
+    fun setLocalCommandEnabled(enabled: Boolean) =
+        scope.launch { settingsManager.saveLocalCommandEnabled(enabled) }
     fun setOpenAiServiceTierEnabled(enabled: Boolean) =
         scope.launch { settingsManager.saveOpenAiServiceTierEnabled(enabled) }
     fun setOpenAiServiceTier(tier: String) =
@@ -596,6 +619,11 @@ class SettingsRepository(
     fun addShellDevice(device: ShellDeviceConfig) = scope.launch { settingsManager.saveShellDevices(shellDevices.value + device) }
     fun updateShellDevice(device: ShellDeviceConfig) = scope.launch {
         settingsManager.saveShellDevices(shellDevices.value.map { if (it.id == device.id) device else it })
+    }
+    fun rememberSshDetectedShell(deviceId: String, detected: String) {
+        val current = shellDevices.value.find { it.id == deviceId } ?: return
+        if (current.sshDetectedShell == detected) return
+        updateShellDevice(current.copy(sshDetectedShell = detected))
     }
     fun addMcpServer(server: McpServerConfig) =
         scope.launch { settingsManager.saveMcpServers(mcpServers.value + server) }

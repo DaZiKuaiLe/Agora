@@ -4,20 +4,28 @@ import android.app.Application
 import android.content.Context
 import com.newoether.agora.R
 import com.newoether.agora.api.local.LocalProvider
+import com.newoether.agora.api.util.ContextTokenEstimator
 import com.newoether.agora.automation.ConversationExecutionCoordinator
+import com.newoether.agora.data.BuiltInPrompts
+import com.newoether.agora.data.TimeBandPolicy
 import com.newoether.agora.data.local.ChatEntity
 import com.newoether.agora.data.repository.ConversationRepository
 import com.newoether.agora.data.repository.SettingsRepository
 import com.newoether.agora.model.ChatMessage
+import com.newoether.agora.model.ContextBudget
 import com.newoether.agora.model.MessageStatus
 import com.newoether.agora.model.Participant
 import com.newoether.agora.model.RunEffect
 import com.newoether.agora.model.SelectedAttachment
+import com.newoether.agora.tool.CompactTurnIndexer
 import com.newoether.agora.util.Constants
+import com.newoether.agora.util.CrashReporter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
@@ -67,7 +75,7 @@ internal sealed interface AutomationSendOutcome {
 
 /** Only durable Compact success may release any automatic queue or loop handoff. */
 internal fun automaticCompactAllowsHandoff(status: MessageStatus?): Boolean =
-    status == MessageStatus.SUCCESS
+    status == null || status == MessageStatus.SUCCESS
 
 /** Dictates whether a send scrolls unconditionally or only while the user is at the bottom. */
 internal enum class SendScrollPolicy {
@@ -95,6 +103,7 @@ internal class MessageGenerationController(
     // -- Process-scoped collaborators --
     private val convRepo: ConversationRepository,
     private val settings: SettingsRepository,
+    private val memoryManager: com.newoether.agora.data.MemoryManager,
     private val registry: ConversationStateRegistry,
     private val generationManagerProvider: () -> GenerationManager,
     private val requestBuilder: GenerationRequestBuilder,
@@ -143,9 +152,94 @@ internal class MessageGenerationController(
     private val onTreeMutationFailed: (requestId: Long?) -> Unit = {},
     private val regenerationTransitions: RegenerationTransitionCoordinator,
     private val pauseConversationTasks: suspend (String) -> Unit = {},
+    private val onBatchCompactingChanged: (conversationId: String, compacting: Boolean) -> Unit =
+        { _, _ -> },
+    private val onBatchCompactProgress: (conversationId: String, progress: CompactBatchProgress) -> Unit =
+        { _, _ -> },
 ) {
+    private val compactSendPrompt = AutomaticCompactSendPrompt()
+    val pendingAutomaticCompactPrompt: StateFlow<Boolean>
+        get() = compactSendPrompt.pending
+
+    init {
+        ProcessCompletionSendPort.send = { conversationId, modelId, text ->
+            sendInto(
+                genId = conversationId,
+                wasNewChat = false,
+                newConversation = null,
+                text = text,
+                images = emptyList(),
+                attachments = emptyList(),
+                modelId = modelId,
+                onAccepted = {},
+                scrollPolicy = SendScrollPolicy.ATTACHED_ONLY,
+                userMessageIdPrefix = Constants.PROCESS_NOTICE_MSG_PREFIX,
+            )
+        }
+    }
+
+    fun confirmAutomaticCompactSend() = compactSendPrompt.confirm()
+
+    fun skipAutomaticCompactSend() = compactSendPrompt.skip()
+
+    private val digestSendPrompt = DigestSendPrompt()
+    val pendingDigestUpdatePrompt: StateFlow<Boolean>
+        get() = digestSendPrompt.pending
+
+    fun confirmDigestUpdateSend() = digestSendPrompt.confirm()
+
+    fun abortDigestUpdateSend() = digestSendPrompt.abort()
+
+    private val formatRecompactPrompt = CompactFormatSendPrompt()
+    val pendingCompactFormatPrompt: StateFlow<Boolean>
+        get() = formatRecompactPrompt.pending
+
+    fun confirmCompactFormatSend() = formatRecompactPrompt.confirm()
+
+    fun abortCompactFormatSend() = formatRecompactPrompt.abort()
+
+    private val _digestIntegrityAlert = MutableStateFlow<DigestIntegrityAlert?>(null)
+    val digestIntegrityAlert: StateFlow<DigestIntegrityAlert?> = _digestIntegrityAlert.asStateFlow()
+
+    fun dismissDigestIntegrityAlert() {
+        _digestIntegrityAlert.value = null
+    }
+
+    private val _compactTurnTooLargeAlert = MutableStateFlow(false)
+    val compactTurnTooLargeAlert: StateFlow<Boolean> = _compactTurnTooLargeAlert.asStateFlow()
+
+    fun dismissCompactTurnTooLargeAlert() {
+        _compactTurnTooLargeAlert.value = false
+    }
+
+    internal fun presentCompactTurnTooLarge() {
+        _compactTurnTooLargeAlert.value = true
+    }
+
+    private fun presentInteractiveCompactFailure(failed: CompactResult.Failed) {
+        if (failed.shouldPresentAsDialog()) {
+            presentCompactTurnTooLarge()
+        } else {
+            onSnackbar(compactFailureMessage(appContext, failed))
+        }
+    }
+
+    private fun presentDigestIntegrity(conversationId: String, issues: List<DigestIntegrityIssue>) {
+        if (issues.isEmpty()) return
+        _digestIntegrityAlert.value = DigestIntegrityAlert(conversationId, issues)
+    }
+
     private val titleGenerator = ConversationTitleGenerator(convRepo, settings, providerRegistry)
-    private val contextCompactor = ContextCompactor(conversations = convRepo)
+    private val batchCompactEngine = BatchCompactEngine(
+        conversations = convRepo,
+        detailStore = com.newoether.agora.tool.DetailStore(application),
+        providers = providerRegistry,
+        knowledgeSource = SettingsDigestKnowledgeSource(
+            conversations = convRepo,
+            settings = settings,
+            memory = memoryManager,
+        ),
+    )
     private val terminalSettlement = GenerationTerminalSettlementController(
         conversations = convRepo,
         stopFinalizer = GenerationFinalizer(convRepo) { _, _ -> },
@@ -157,33 +251,22 @@ internal class MessageGenerationController(
     private val boundRunGenerationLauncher = BoundRunGenerationLauncher(
         conversations = convRepo,
         generationManagerProvider = generationManagerProvider,
-        automaticCompactNeeded = contextCompactor::automaticNeeded,
         terminalSettlement = terminalSettlement,
         toUiMessage = { it.toUiChatMessage(appContext) },
-        onAutomaticCompactContinuation = ::scheduleAutomaticCompactContinuation,
-    )
-    private val standardContinuationLauncher = StandardGenerationContinuationLauncher(
-        conversations = convRepo,
-        executionCoordinator = executionCoordinator,
-        terminalSettlement = terminalSettlement,
-        boundRunGenerationLauncher = { boundRunGenerationLauncher },
-        toUiMessage = { it.toUiChatMessage(appContext) },
-        isConversationOpen = { currentConversationId.value == it },
-        projectGraph = { _, committedMessages, selectedChildren, streamingMessage ->
-            renderStore.commitGraph(
-                committedMessages = committedMessages,
-                selectedChildren = selectedChildren,
-                streamingMessage = streamingMessage,
-            )
-        },
     )
     private val compactController = ConversationCompactController(
-        conversations = convRepo,
-        operation = contextCompactor,
+        batchEngine = batchCompactEngine,
         requestBuilder = requestBuilder,
-        generationManagerProvider = generationManagerProvider,
-        continuationLauncher = { standardContinuationLauncher },
         onCompactStarted = onScrollToAttachedBottomAfter,
+        onBatchCompactingChanged = onBatchCompactingChanged,
+        onBatchCompactProgress = onBatchCompactProgress,
+        onDigestIntegrity = ::presentDigestIntegrity,
+        appContext = appContext,
+    )
+    private val integrationEngine = IntegrationEngine(
+        conversations = convRepo,
+        detailStore = com.newoether.agora.tool.DetailStore(application),
+        providers = providerRegistry,
     )
     private val acceptanceNotifier = SendAcceptanceNotifier(onSendAcceptedEvent)
     private val directAcceptedInputExecutor = DirectAcceptedInputEffectExecutor(
@@ -273,10 +356,9 @@ internal class MessageGenerationController(
         scope = viewModelScope,
         conversations = convRepo,
         executionCoordinator = executionCoordinator,
-        toUiMessage = { it.toUiChatMessage(appContext) },
         isConversationOpen = { currentConversationId.value == it },
-        projectGraph = { all, selected ->
-            renderStore.replaceGraph(allMessages = all, selectedChildren = selected)
+        projectGraph = { _, selected ->
+            renderStore.setSelectedChildren(selected)
         },
         onMutationStart = onTreeMutationStart,
         onMutationSettling = onTreeMutationSettling,
@@ -306,6 +388,51 @@ internal class MessageGenerationController(
             request = request,
             state = registry.getOrCreate(conversationId),
         )
+    }
+
+    suspend fun optimizeFullContext(model: String): CompactResult {
+        val conversationId = currentConversationId.value
+            ?: return CompactResult.Failed(CompactFailureReason.OPEN_CONVERSATION)
+        if (model.isBlank()) return CompactResult.Failed(CompactFailureReason.SELECT_MODEL)
+        val snapshot = try {
+            requestBuilder.captureAdmissionSnapshot(
+                conversationId = conversationId,
+                runId = "optimize_${UUID.randomUUID()}",
+                modelId = model,
+            )
+        } catch (_: Exception) {
+            return CompactResult.Failed(CompactFailureReason.SETUP_FAILED)
+        }
+        val config = snapshot.automaticCompact.copy(
+            enabled = true,
+            request = snapshot.automaticCompact.request.copy(
+                model = model,
+                prompt = BuiltInPrompts.CONTEXT_INTEGRATE_SYSTEM,
+            ),
+        )
+        if (!config.configured || config.provider == null) {
+            return CompactResult.Failed(CompactFailureReason.SETUP_UNAVAILABLE)
+        }
+        onBatchCompactingChanged(conversationId, true)
+        onBatchCompactProgress(conversationId, CompactBatchProgress(0, 0, CompactProgressKind.OPTIMIZE))
+        CrashReporter.note("optimize.overlay")
+        return try {
+            val integrated = integrationEngine.optimizeAll(
+                conversationId = conversationId,
+                config = config,
+                appContext = appContext,
+                onProgress = { onBatchCompactProgress(conversationId, it) },
+            )
+            CrashReporter.note("optimize.archive.start")
+            val archived = compactController.archiveFullRecompact(
+                conversationId = conversationId,
+                config = config,
+                onProgress = { onBatchCompactProgress(conversationId, it) },
+            )
+            mergeOptimizeResults(integrated, archived)
+        } finally {
+            onBatchCompactingChanged(conversationId, false)
+        }
     }
 
     // ==================================
@@ -422,34 +549,8 @@ internal class MessageGenerationController(
         if (!wasNewChat) {
             val state = registry.getOrCreate(genId)
             if (!state.generating.value) {
-                settings.awaitInitialLoad()
-                val preflightRunId = "compact_preflight_${UUID.randomUUID()}"
-                val snapshot = requestBuilder.captureAdmissionSnapshot(
-                    conversationId = genId,
-                    runId = preflightRunId,
-                    modelId = selectedModelId,
-                )
-                val fixedTokenCost = generationManagerProvider().fixedContextTokenCost(
-                    snapshot.config,
-                    snapshot.context,
-                )
-                // The Compact row is durable and visible before this returns. sendInto then sees
-                // the same occupied generation slot and accepts this input through the ordinary
-                // FIFO guidance queue instead of waiting in a Compact-specific preflight state.
-                when (
-                    val compact = compactController.startAutomaticBeforeSend(
-                        conversationId = genId,
-                        config = snapshot.automaticCompact.copy(fixedTokenCost = fixedTokenCost),
-                        state = state,
-                    )
-                ) {
-                    is CompactResult.Failed -> {
-                        onSnackbar(compactFailureMessage(appContext, compact))
-                        return null
-                    }
-                    is CompactResult.Stopped -> return null
-                    CompactResult.NotNeeded,
-                    is CompactResult.Created -> Unit
+                if (!awaitInteractiveCompactBeforeSend(genId, selectedModelId, state)) {
+                    return null
                 }
             }
         }
@@ -504,6 +605,7 @@ internal class MessageGenerationController(
          *  it by scanning the conversation tail (a concurrent branch would win that scan). */
         onModelMessageCreated: ((String) -> Unit)? = null,
         onGenerationJob: ((kotlinx.coroutines.Job?) -> Unit)? = null,
+        userMessageIdPrefix: String? = null,
     ): SendAcceptance? {
         val state = registry.getOrCreate(genId)
         val providerName = requestBuilder.resolveProviderKey(modelId)?.providerName ?: return null
@@ -526,7 +628,7 @@ internal class MessageGenerationController(
 
         suspend fun enqueueAcceptedGuidance(runId: String): QueuedSend {
             val queued = QueuedSend(
-                id = UUID.randomUUID().toString(),
+                id = (userMessageIdPrefix ?: "") + UUID.randomUUID().toString(),
                 text = text,
                 modelId = modelId,
                 attachments = attachments,
@@ -647,6 +749,7 @@ internal class MessageGenerationController(
                 requestScroll = resolveScrollCallback(scrollPolicy),
                 onAccepted = onAccepted,
                 onModelMessageCreated = onModelMessageCreated,
+                userMessageIdPrefix = userMessageIdPrefix,
             ),
             state,
         )
@@ -721,43 +824,153 @@ internal class MessageGenerationController(
         return AutomationSendOutcome.Delivered(modelMessageId)
     }
 
-    private fun scheduleAutomaticCompactContinuation(
-        request: AutomaticCompactContinuationRequest,
-        state: ConversationGenerationState,
-    ) {
-        val guidanceClaimRevision = state.guidanceClaimRevision()
-        // The current Assistant must release first. Suppress exactly that release's ordinary queue
-        // drain so the already-decided Compact generation owns the next standard slot.
-        state.deferNextQueueDrain()
-        state.scope.launch {
-            state.awaitSendAvailable()
-            val compactLaunch = compactController.startAutomaticStandard(
-                conversationId = request.generationRequest.conversationId,
-                config = request.config,
-                state = state,
-            ) ?: return@launch
-            compactLaunch.job.join()
-            val compactMessageId = compactLaunch.messageId
-            val compactStatus = convRepo
-                .getMessagesForConversationSnapshot(request.generationRequest.conversationId)
-                .find { it.id == compactMessageId }
-                ?.status
-            if (!automaticCompactAllowsHandoff(compactStatus)) return@launch
-
-            // Queue inspection and no-input continuation admission share the queue mutex, so
-            // guidance arriving at Compact settlement cannot lose the Queue-before-Loop race.
-            launchStandardContinuationAfterGuidance(
-                state = state,
-                guidanceClaimRevision = guidanceClaimRevision,
-            ) {
-                standardContinuationLauncher.launch(
-                    request = StandardGenerationContinuationRequest(
-                        conversationId = request.generationRequest.conversationId,
-                        parentMessageId = compactMessageId,
-                        snapshot = request.generationRequest.snapshot,
-                    ),
-                    state = state,
+    fun scheduleTurnIntegration(conversationId: String) {
+        if (!TimeBandPolicy.INTEGRATION_BAND_ENABLED) return
+        viewModelScope.launch {
+            val snapshot = runCatching {
+                requestBuilder.captureAdmissionSnapshot(
+                    conversationId = conversationId,
+                    runId = "integrate_${UUID.randomUUID()}",
+                    modelId = currentActiveModel.value,
                 )
+            }.getOrNull() ?: return@launch
+            integrationEngine.prefetchAndSweep(conversationId, snapshot.automaticCompact)
+        }
+    }
+
+    fun scheduleArchivePrecompress(conversationId: String) {
+        if (!TimeBandPolicy.ARCHIVE_BAND_ENABLED) return
+        viewModelScope.launch {
+            val snapshot = runCatching {
+                requestBuilder.captureAdmissionSnapshot(
+                    conversationId = conversationId,
+                    runId = "archive_pre_${UUID.randomUUID()}",
+                    modelId = currentActiveModel.value,
+                )
+            }.getOrNull() ?: return@launch
+            compactController.schedulePrecompress(
+                conversationId = conversationId,
+                config = snapshot.automaticCompact,
+                state = registry.getOrCreate(conversationId),
+            )
+        }
+    }
+
+    /**
+     * Interactive send only. An older compact/projection contract waits for confirm (full optimize
+     * then send) or abort. Over-threshold context waits for confirm (compact then send) or skip
+     * (send without compact). Tasks keep a silent path and never call this.
+     *
+     * Occupancy and format-stale gates read the seated ledger / conversation row. They do not
+     * rebuild the provider path; context detail remains the audit.
+     */
+    private suspend fun awaitInteractiveCompactBeforeSend(
+        conversationId: String,
+        selectedModelId: String,
+        state: ConversationGenerationState,
+    ): Boolean {
+        if (TimeBandPolicy.INTEGRATION_BAND_ENABLED) {
+            scheduleTurnIntegration(conversationId)
+        }
+        if (!TimeBandPolicy.ARCHIVE_BAND_ENABLED) {
+            return true
+        }
+        settings.awaitInitialLoad()
+        if (!awaitFormatRecompactBeforeSend(conversationId, selectedModelId)) {
+            return false
+        }
+        if (!interactiveAutomaticCompactNeeded(conversationId, selectedModelId)) {
+            return true
+        }
+        return when (compactSendPrompt.awaitDecision()) {
+            AutomaticCompactSendDecision.AbortSend -> false
+            AutomaticCompactSendDecision.SendWithoutCompact -> true
+            AutomaticCompactSendDecision.CompactThenSend -> {
+                val confirmSnapshot = requestBuilder.captureAdmissionSnapshot(
+                    conversationId = conversationId,
+                    runId = "compact_preflight_${UUID.randomUUID()}",
+                    modelId = selectedModelId,
+                )
+                val confirmConfig = confirmSnapshot.automaticCompact.copy(
+                    fixedTokenCost = generationManagerProvider().fixedContextTokenCost(
+                        confirmSnapshot.config,
+                        confirmSnapshot.context,
+                    ),
+                )
+                when (
+                    val compact = compactController.startAutomaticBeforeSend(
+                        conversationId = conversationId,
+                        config = confirmConfig,
+                        state = state,
+                    )
+                ) {
+                    is CompactResult.Failed -> {
+                        presentInteractiveCompactFailure(compact)
+                        false
+                    }
+                    is CompactResult.Stopped -> false
+                    CompactResult.NotNeeded, is CompactResult.Created -> true
+                }
+            }
+        }
+    }
+
+    private suspend fun interactiveAutomaticCompactNeeded(
+        conversationId: String,
+        selectedModelId: String,
+    ): Boolean {
+        if (!settings.contextCompactEnabled.value) return false
+        val canonicalId = providerRegistry.canonicalModelId(selectedModelId)
+        val modelGen = settings.modelGenerationSettings.value[canonicalId]
+        val tokenBudget = ContextBudget.normalize(
+            modelGen?.contextLimit ?: ContextBudget.DEFAULT_CONTEXT_LIMIT,
+        )
+        val compactThreshold = modelGen?.compactThreshold ?: ContextBudget.DEFAULT_COMPACT_THRESHOLD
+        val retainTurns = settings.contextCompactRetainCount.value
+        val cache = convRepo.getSendTokenCache(conversationId)
+        val pathMessages = messages.value
+        val advanced = resolveSendLedgerForInteractive(
+            cache = cache,
+            tokenBudget = tokenBudget,
+            retainTurns = retainTurns,
+            nextCursor = sendLedgerCursor(pathMessages),
+            turns = CompactTurnIndexer.finishedDialogueTurns(pathMessages),
+            estimateTurn = { turn -> ContextTokenEstimator.estimate(turn.messages) },
+        )
+        val seated = when (advanced) {
+            is SendTokenAdvance.Seated -> advanced.cache
+            is SendTokenAdvance.Incremental -> {
+                runCatching { convRepo.setSendTokenCache(conversationId, advanced.cache) }
+                advanced.cache
+            }
+            SendTokenAdvance.NeedsFullRecompute -> return false
+        }
+        return automaticCompactNeededFromLedger(seated, compactThreshold)
+    }
+
+    private suspend fun awaitFormatRecompactBeforeSend(
+        conversationId: String,
+        selectedModelId: String,
+    ): Boolean {
+        if (!compactController.compactFormatStale(conversationId)) return true
+        return when (formatRecompactPrompt.awaitDecision()) {
+            CompactFormatSendDecision.AbortSend -> false
+            CompactFormatSendDecision.RecompactThenSend -> {
+                when (val compact = optimizeFullContext(selectedModelId)) {
+                    is CompactResult.Failed -> {
+                        if (compact.shouldPresentAsDialog()) {
+                            presentCompactTurnTooLarge()
+                        } else {
+                            onSnackbar(
+                                compact.externalDetail?.takeIf(String::isNotBlank)
+                                    ?: appContext.getString(R.string.context_compact_format_failed),
+                            )
+                        }
+                        false
+                    }
+                    is CompactResult.Stopped -> false
+                    CompactResult.NotNeeded, is CompactResult.Created -> true
+                }
             }
         }
     }

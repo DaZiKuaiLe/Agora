@@ -1,5 +1,6 @@
 package com.newoether.agora.viewmodel
 
+import com.newoether.agora.util.SshAuth
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -19,7 +20,7 @@ class ConnectionDiagnosticsTest {
             ioDispatcher = StandardTestDispatcher(testScheduler),
         )
 
-        val result = verifier.verify(" ", 22, "user", "password")
+        val result = verifier.verify(" ", 22, "user", SshAuth(password = "password"))
 
         assertEquals("Host is empty", result.exceptionOrNull()?.message)
         assertFalse(created)
@@ -29,8 +30,8 @@ class ConnectionDiagnosticsTest {
     fun sshProbeUsesRootDefaultReturnsFingerprintAndAlwaysCloses() = runTest {
         val calls = mutableListOf<String>()
         val verifier = SshHostKeyVerifier(
-            createSession = { host, port, user, password ->
-                calls += "$host:$port:$user:$password"
+            createSession = { host, port, user, auth ->
+                calls += "$host:$port:$user:${auth.password}:${auth.preferredAuthentications()}"
                 HostKeyCaptureSession(
                     probe = { calls += "probe" },
                     capturedHostKey = { "key" },
@@ -41,10 +42,10 @@ class ConnectionDiagnosticsTest {
             ioDispatcher = StandardTestDispatcher(testScheduler),
         )
 
-        val result = verifier.verify("host", 2222, "", "secret")
+        val result = verifier.verify("host", 2222, "", SshAuth(password = "secret"))
 
         assertEquals("key" to "fingerprint:key", result.getOrNull())
-        assertEquals(listOf("host:2222:root:secret", "probe", "close"), calls)
+        assertEquals(listOf("host:2222:root:secret:password", "probe", "close"), calls)
     }
 
     @Test
@@ -62,7 +63,7 @@ class ConnectionDiagnosticsTest {
             ioDispatcher = StandardTestDispatcher(testScheduler),
         )
 
-        val result = verifier.verify("host", 22, "user", "bad")
+        val result = verifier.verify("host", 22, "user", SshAuth(password = "bad"))
 
         assertTrue(result.isSuccess)
         assertTrue(closed)
@@ -82,7 +83,7 @@ class ConnectionDiagnosticsTest {
             ioDispatcher = StandardTestDispatcher(testScheduler),
         )
 
-        val result = verifier.verify("host", 22, "user", "password")
+        val result = verifier.verify("host", 22, "user", SshAuth(password = "password"))
 
         assertEquals(
             "Could not reach host or no host key presented",

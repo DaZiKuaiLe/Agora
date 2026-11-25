@@ -69,6 +69,25 @@ data class ChatEntity(
     val selectedRunBranchesJson: String? = null,
     /** True after a completed model generation until this conversation becomes the open target. */
     val hasUnreadGeneration: Boolean = false,
+    /** Active-memory rev snapshotted when the last digest was written; 0 = pre-feature. */
+    val digestActiveMemoryRev: Long = 0L,
+    /** System-prompt entry rev snapshotted when the last digest was written; 0 = pre-feature. */
+    val digestPromptRev: Long = 0L,
+    /** System-prompt id used when the last digest was written; null = pre-feature. */
+    val digestPromptId: String? = null,
+    /** Compact/projection contract applied last; 0 = before format versioning. */
+    val compactFormatRev: Int = 0,
+    /** Next-send occupancy written at turn/compact boundaries. 0 + empty key = never seated. */
+    val cachedSendTokens: Int = 0,
+    val sendTokenCountedTurnId: String? = null,
+    val sendTokenBudget: Int = 0,
+    val sendTokenRetainTurns: Int = 0,
+    val sendTokenFixedCost: Int = 0,
+    val sendTokenConfigKey: String? = null,
+    /** Uncompressed originals outside the retain window; 0 = none or never seated. */
+    val sendTokenPrefixTokens: Int = 0,
+    /** Last top-bar token total. Null until the identity counts seat it once. */
+    val transcriptTokenTotal: Int? = null,
 )
 
 /** A saved automation: a prompt + schedule that fans out a fresh conversation on each run. */
@@ -199,6 +218,19 @@ data class MessageEntity(
     val runSequence: Long = UNASSIGNED_RUN_SEQUENCE,
     /** Non-null only for visible user input; null for model/tool/result rows. */
     val consumedAtPass: Int? = null,
+    /** Stable id for a completed conversation turn (summary-compression / lock anchor). */
+    val turnId: String? = null,
+    /** 总结式压缩锁定: summary batch compression skipped for this turn. */
+    val compactLocked: Boolean = false,
+    /** Non-null once this turn belongs to a persisted summary-compression batch. */
+    val compactBatchId: String? = null,
+    /** Precompress summary cache for the turn's batch; not sent to the model by itself. */
+    val compactSummary: String? = null,
+    /** Working-context digest body; newest batched turn on a branch holds the latest rev. */
+    val compactDigest: String? = null,
+    val compactDigestRev: Int = 0,
+    /** Cached per-turn integration body; Room originals stay unchanged. */
+    val integrateText: String? = null,
 ) {
     companion object {
         const val UNASSIGNED_RUN_SEQUENCE = -1L
@@ -250,6 +282,14 @@ data class MessageToolMediaReference(
 data class ConversationDraftAttachmentReference(
     val id: String,
     val draftAttachments: String,
+)
+
+/** Last visible model/error row used by the task execution log. */
+data class ExecutionMessagePreview(
+    val conversationId: String,
+    val text: String,
+    val status: MessageStatus,
+    val timestamp: Long,
 )
 
 /** Minimal payload needed to generate an embedding. */

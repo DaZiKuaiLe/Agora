@@ -60,22 +60,17 @@ class BoundRunGenerationLauncherTest {
         }
 
         assertSame(currentCoroutineContext()[Job], generationJob)
-        coVerify(exactly = 1) {
-            fixture.compactController.automaticNeeded(
-                conversationId = "conversation",
-                config = fixture.snapshot.automaticCompact,
-            )
-        }
+        assertEquals(
+            ToolRoundBoundaryDecision.Continue,
+            callbacks.captured.onToolRoundPersisted(),
+        )
         fixture.state.dispose()
         Unit
     }
 
     @Test
-    fun automaticCompactCompletesTheAssistantRunBeforeSchedulingFollowUp() = runBlocking {
+    fun toolRoundAlwaysContinuesWithoutSchedulingCompactFollowUp() = runBlocking {
         val fixture = Fixture()
-        coEvery {
-            fixture.compactController.automaticNeeded(any(), any())
-        } returns true
         coEvery {
             fixture.manager.generate(
                 any(), any(), any(), any(), any(), any(), any(),
@@ -84,7 +79,7 @@ class BoundRunGenerationLauncherTest {
         } coAnswers {
             val callbacks = arg<GenerationCallbacks>(11)
             assertEquals(
-                ToolRoundBoundaryDecision.CompleteForFollowUp,
+                ToolRoundBoundaryDecision.Continue,
                 callbacks.onToolRoundPersisted(),
             )
             GenerationExecutionResult(
@@ -98,10 +93,6 @@ class BoundRunGenerationLauncherTest {
             unmockkObject(DebugLog)
         }
 
-        val continuation = fixture.continuationRequests.single()
-        assertEquals("result-boundary", continuation.parentMessageId)
-        assertEquals(fixture.request, continuation.generationRequest)
-        assertSame(fixture.state, fixture.continuationStates.single())
         fixture.state.dispose()
         Unit
     }
@@ -128,8 +119,8 @@ class BoundRunGenerationLauncherTest {
             )
         } throws IllegalStateException("configuration failed")
         coEvery {
-            fixture.conversations.getMessagesForConversationSnapshot("conversation")
-        } returns listOf(MESSAGE_ENTITY)
+            fixture.conversations.getMessage("model-message")
+        } returns MESSAGE_ENTITY
         val failedMessage = slot<ChatMessage>()
         coEvery {
             fixture.terminalSettlement.finalizeBoundFailure(
@@ -207,10 +198,7 @@ class BoundRunGenerationLauncherTest {
     private class Fixture {
         val conversations = mockk<ConversationRepository>()
         val manager = mockk<GenerationManager>()
-        val compactController = mockk<ConversationCompactController>()
         val terminalSettlement = mockk<GenerationTerminalSettlementController>()
-        val continuationRequests = mutableListOf<AutomaticCompactContinuationRequest>()
-        val continuationStates = mutableListOf<ConversationGenerationState>()
         val state = ConversationGenerationState("conversation")
         val uiToken = requireNotNull(state.acquireForSend())
         val snapshot = testGenerationAdmissionSnapshot(
@@ -235,19 +223,11 @@ class BoundRunGenerationLauncherTest {
         init {
             state.bindRun(uiToken, "run", pass = 3)
             every { manager.fixedContextTokenCost(any(), any()) } returns 0
-            coEvery {
-                compactController.automaticNeeded(any(), any())
-            } returns false
             launcher = BoundRunGenerationLauncher(
                 conversations = conversations,
                 generationManagerProvider = { manager },
-                automaticCompactNeeded = compactController::automaticNeeded,
                 terminalSettlement = terminalSettlement,
                 toUiMessage = ::toUiMessage,
-                onAutomaticCompactContinuation = { request, state ->
-                    continuationRequests += request
-                    continuationStates += state
-                },
                 clock = { 150L },
             )
         }

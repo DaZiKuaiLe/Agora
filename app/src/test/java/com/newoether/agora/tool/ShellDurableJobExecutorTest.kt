@@ -163,17 +163,17 @@ class ShellDurableJobExecutorTest {
     fun committedTerminalShellResultsResolveAcknowledgementsAcrossEnvelopes() {
         val calls = listOf(
             ToolCallData(
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 arguments = """{"server":"primary"}""",
                 result = """{"server":"primary","job_id":"one","result":{"state":"succeeded"}}""",
             ),
             ToolCallData(
-                toolName = "get_shell_job",
+                toolName = "get_remote_job",
                 arguments = """{"server":"secondary","job_id":"two"}""",
                 result = """{"type":"shell_job","job_id":"two","state":"failed"}""",
             ),
             ToolCallData(
-                toolName = "wait_for_job",
+                toolName = "wait_remote_job",
                 arguments = """{"server":"third","job_id":"three"}""",
                 result = """{"job_id":"three","result":{"state":"interrupted"}}""",
             ),
@@ -193,17 +193,17 @@ class ShellDurableJobExecutorTest {
     fun runningMalformedAndUnrelatedResultsAreNeverAcknowledged() {
         val calls = listOf(
             ToolCallData(
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 arguments = "{}",
                 result = """{"background":true,"job_id":"running","state":"running"}""",
             ),
             ToolCallData(
-                toolName = "stop_shell_job",
+                toolName = "stop_remote_job",
                 arguments = "{}",
                 result = """{"job_id":"stopping","state":"stopping"}""",
             ),
             ToolCallData(
-                toolName = "get_shell_job",
+                toolName = "get_remote_job",
                 arguments = "{}",
                 result = "not-json",
             ),

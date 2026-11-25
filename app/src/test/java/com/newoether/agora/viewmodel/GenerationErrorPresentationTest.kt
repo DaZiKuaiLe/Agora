@@ -233,17 +233,7 @@ class GenerationErrorPresentationTest {
             "generation_error_tls_failure",
         )
         val directories = listOf(
-            "values-ar",
-            "values-de",
-            "values-es",
-            "values-fr",
-            "values-ja",
-            "values-ko",
-            "values-pt-rBR",
-            "values-ru",
-            "values-vi",
             "values-zh",
-            "values-zh-rTW",
         )
         val defaults = stringValues(sourceFile("app/src/main/res/values/strings.xml"))
         assertTrue(defaults.keys.containsAll(keys))

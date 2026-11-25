@@ -4,6 +4,7 @@ import androidx.datastore.preferences.core.Preferences
 import com.newoether.agora.util.Constants
 import com.newoether.agora.util.DebugLog
 import com.newoether.agora.util.SecretCrypto
+import com.newoether.agora.util.SshAuth
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -22,8 +23,8 @@ data class ShellDeviceConfig(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val description: String = "",
-    val type: String = "conch",          // "conch" | "ssh"
-    // Conch fields (type=conch)
+    val type: String = "ssh",          // "ssh" (legacy configs may still store "conch")
+    // Legacy Conch fields (ignored by tools; kept for DataStore decode compatibility)
     val serverUrl: String = "",
     val apiKey: String = "",
     val conchPublicKey: String = "",
@@ -32,10 +33,50 @@ data class ShellDeviceConfig(
     val sshPort: Int = 22,
     val sshUser: String = "root",
     val sshPassword: String = "",
+    /** OpenSSH / PEM / PuTTY private key text. Non-blank selects public-key auth. */
+    val sshPrivateKey: String = "",
+    /** Passphrase for an encrypted [sshPrivateKey]; ignored for unencrypted keys. */
+    val sshKeyPassphrase: String = "",
+    /** Display-only filename of the imported private key. */
+    val sshKeyLabel: String = "",
     // Pinned SSH host key (base64 of the server public-key blob). Blank = not yet
     // pinned (trust-on-first-use); once set, connections must match or are rejected.
-    val sshHostKey: String = ""
-)
+    val sshHostKey: String = "",
+    /** User override: "auto" | "posix" | "cmd" | "powershell". */
+    val sshShell: String = "auto",
+    /** Last probed exec shell when [sshShell] is auto: "posix" | "cmd" | "powershell". */
+    val sshDetectedShell: String = "",
+) {
+    fun sshAuth(): SshAuth =
+        SshAuth.exclusive(
+            usePublicKey = sshPrivateKey.isNotBlank(),
+            password = sshPassword,
+            privateKey = sshPrivateKey,
+            passphrase = sshKeyPassphrase,
+        )
+
+    fun withExclusiveSshAuth(
+        usePublicKey: Boolean,
+        password: String,
+        privateKey: String,
+        passphrase: String,
+        keyLabel: String,
+    ): ShellDeviceConfig = if (usePublicKey) {
+        copy(
+            sshPassword = "",
+            sshPrivateKey = privateKey,
+            sshKeyPassphrase = passphrase,
+            sshKeyLabel = keyLabel,
+        )
+    } else {
+        copy(
+            sshPassword = password,
+            sshPrivateKey = "",
+            sshKeyPassphrase = "",
+            sshKeyLabel = "",
+        )
+    }
+}
 
 @Serializable
 enum class McpTransportType {
@@ -65,7 +106,9 @@ data class SystemPromptEntry(
     val content: String = "",
     val systemItems: List<PromptTemplateItem> = emptyList(),
     val userPrependItems: List<PromptTemplateItem> = emptyList(),
-    val userPostpendItems: List<PromptTemplateItem> = emptyList()
+    val userPostpendItems: List<PromptTemplateItem> = emptyList(),
+    /** Incremented on each user save; conversations snapshot it when a digest is written. */
+    val rev: Long = 0L,
 ) {
     val resolvedSystemItems: List<PromptTemplateItem>
         get() = if (systemItems.isNotEmpty()) systemItems
@@ -79,6 +122,13 @@ internal val WEB_SEARCH_PROVIDERS = setOf(
 
 internal fun normalizeWebSearchProvider(provider: String?): String =
     provider?.trim()?.lowercase()?.takeIf(WEB_SEARCH_PROVIDERS::contains) ?: "zhipu"
+
+internal fun normalizeAppLanguage(language: String?): String =
+    when (val code = language?.trim()) {
+        "en", "zh" -> code
+        "zh-Hant" -> "zh"
+        else -> "system"
+    }
 
 internal fun decodeWebSearchApiKeys(preferences: Preferences, json: Json): Map<String, String> {
     val raw = SecretCrypto.decrypt(preferences[WEB_SEARCH_API_KEYS_JSON] ?: "{}")
@@ -118,10 +168,13 @@ data class ConversationToolState(
     val googleSearchEnabled: Boolean? = null,
     val openAiWebSearchEnabled: Boolean? = null,
     val webSearchEnabled: Boolean? = null,
-    val shellEnabled: Boolean? = null
+    val shellEnabled: Boolean? = null,
+    /** Null means Ask mode on (the composer default). */
+    val askModeEnabled: Boolean? = null,
 ) {
     fun isAllNull() = codeExecutionEnabled == null && googleSearchEnabled == null
         && openAiWebSearchEnabled == null && webSearchEnabled == null && shellEnabled == null
+        && askModeEnabled == null
 }
 
 /**

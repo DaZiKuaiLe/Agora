@@ -1,0 +1,15 @@
+---
+description: How to write and run Agora unit tests (invariants, not source contracts)
+alwaysApply: true
+---
+
+# Tests
+
+Authoritative policy: `development-docs/testing.md`.
+
+- Test product invariants (data, wire payload, compact/digest, migrations). Do not snapshot prompt prose, UI copy, or Kotlin source text.
+- Never add `*SourceContractTest` or `File.readText()` greps of `app/src/main`.
+- Prefer one table-driven test per function, not one `@Test` per branch.
+- Daily: `:app:compilePlayDebugKotlin` and `--tests` on touched classes. Full `:app:testPlayDebugUnitTest` before merge/release. After every app code change, also run `:app:assembleFdroidDebug` and leave `app/build/outputs/apk/fdroid/debug/app-fdroid-debug.apk` ready to install. Do not combine that APK task with another flavor's tests in one command.
+- `JAVA_HOME` = Android Studio JBR. Use the project `gradlew` with no `--no-daemon` and no proxy JVM flags (`JAVA_OPTS`, `GRADLE_OPTS`, `-Dhttp.proxyHost`), so the build reuses Android Studio's warm daemon and `app/build`. Proxy is set once in the user `~/.gradle/gradle.properties` (127.0.0.1:7897); that file stays outside the repo.
+- MockK DAO tests may fail on JDK 25 (environment, not a product bug).

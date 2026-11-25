@@ -44,6 +44,7 @@ class ChatViewModelFactory(
     private val automationExecutionGate: AutomationExecutionGate,
     private val conversationStateRegistry: ConversationStateRegistry,
     private val shellConfirmationController: ShellConfirmationController,
+    private val allFilesAccessController: AllFilesAccessController,
     private val mcpRegistry: McpRegistry,
     private val mcpToolProvider: McpToolProvider,
     private val taskExecutionEngine: TaskExecutionEngine,
@@ -56,7 +57,7 @@ class ChatViewModelFactory(
                 autoBackupManager, conversationRepository, settingsRepository, localProvider, providerRegistry,
                 taskManager, loopManager, automationToolProvider, conversationExecutionCoordinator,
                 automationExecutionGate, conversationStateRegistry, shellConfirmationController,
-                mcpRegistry, mcpToolProvider, taskExecutionEngine,
+                allFilesAccessController, mcpRegistry, mcpToolProvider, taskExecutionEngine,
             ) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")

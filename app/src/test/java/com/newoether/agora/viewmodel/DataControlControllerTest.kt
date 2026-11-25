@@ -36,9 +36,6 @@ class DataControlControllerTest {
                 ChatEntity("one", "One"),
                 ChatEntity("two", "Two"),
             )
-            every { memory.listFiles() } returns listOf(
-                MemoryManager.MemoryFileInfo("memory.md"),
-            )
             every { memory.getActiveMemory() } returns "active"
             every { skills.listFiles() } returns listOf(
                 SkillManager.SkillFileInfo("review.md"),
@@ -50,7 +47,7 @@ class DataControlControllerTest {
             runCurrent()
 
             assertEquals(2, controller.conversationCount.value)
-            assertEquals(3, controller.memoryCount.value)
+            assertEquals(2, controller.memoryCount.value)
             assertEquals(0, controller.systemPromptCount.value)
         }
 

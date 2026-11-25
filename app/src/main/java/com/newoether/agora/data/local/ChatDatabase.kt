@@ -12,6 +12,14 @@ import com.newoether.agora.data.local.migration.MIGRATION_19_20
 import com.newoether.agora.data.local.migration.MIGRATION_20_21
 import com.newoether.agora.data.local.migration.MIGRATION_21_22
 import com.newoether.agora.data.local.migration.MIGRATION_22_23
+import com.newoether.agora.data.local.migration.MIGRATION_23_24
+import com.newoether.agora.data.local.migration.MIGRATION_24_25
+import com.newoether.agora.data.local.migration.MIGRATION_25_26
+import com.newoether.agora.data.local.migration.MIGRATION_26_27
+import com.newoether.agora.data.local.migration.MIGRATION_27_28
+import com.newoether.agora.data.local.migration.MIGRATION_28_29
+import com.newoether.agora.data.local.migration.MIGRATION_29_30
+import com.newoether.agora.data.local.migration.MIGRATION_30_31
 
 @Database(
     entities = [
@@ -27,9 +35,10 @@ import com.newoether.agora.data.local.migration.MIGRATION_22_23
 )@TypeConverters(MessageConverters::class)
 abstract class ChatDatabase : RoomDatabase() {
     abstract fun chatDao(): ChatDao
+    abstract fun chatUiMessageDao(): ChatUiMessageDao
 
     companion object {
-        const val CURRENT_VERSION = 23
+        const val CURRENT_VERSION = 31
         const val DB_NAME = "agora_db"
 
         val ALL_MIGRATIONS = listOf(
@@ -165,6 +174,14 @@ abstract class ChatDatabase : RoomDatabase() {
             MIGRATION_20_21,
             MIGRATION_21_22,
             MIGRATION_22_23,
+            MIGRATION_23_24,
+            MIGRATION_24_25,
+            MIGRATION_25_26,
+            MIGRATION_26_27,
+            MIGRATION_27_28,
+            MIGRATION_28_29,
+            MIGRATION_29_30,
+            MIGRATION_30_31,
         )
 
         fun inspectCompatibility(context: Context): DatabaseCompatibility {

@@ -170,6 +170,7 @@ class MessageListLayoutTest {
         assertEquals(680, minimum)
         assertEquals(680, layoutHeight)
         assertEquals(viewport - top, layoutHeight + bottom)
+        assertEquals(420, calculateFollowBottomExtraPaddingPx(minimum, content))
     }
 
     @Test
@@ -182,6 +183,8 @@ class MessageListLayoutTest {
 
         assertEquals(minimum, beforeHeight)
         assertEquals(minimum, afterHeight)
+        assertEquals(minimum - beforeContent, calculateFollowBottomExtraPaddingPx(minimum, beforeContent))
+        assertEquals(minimum - afterContent, calculateFollowBottomExtraPaddingPx(minimum, afterContent))
     }
 
     @Test
@@ -197,11 +200,14 @@ class MessageListLayoutTest {
     @Test
     fun longTailGrowsNaturallyPastTheMinimum() {
         val minimum = calculateTailMinHeightPx(1_000, 140, 180)
-
-        assertEquals(
-            2_000,
-            calculateTailLayoutHeightPx(minimum, contentHeightPx = 2_000),
-        )
+        val user = message("user", Participant.USER)
+        val turn = MessageListTurn(user.id, listOf(user, message("assistant", Participant.MODEL)))
+        assertEquals(2_000, calculateTailLayoutHeightPx(minimum, contentHeightPx = 2_000))
+        assertEquals(0, calculateFollowBottomExtraPaddingPx(minimum, 2_000))
+        assertEquals(minimum, calculateFollowBottomExtraPaddingPx(minimum, 0))
+        assertEquals(500, measuredTurnContentHeightPx(turn, mapOf(user.id to 120, "assistant" to 380)))
+        assertEquals(0, measuredTurnContentHeightPx(turn, mapOf(user.id to 0)))
+        assertEquals(0, measuredTurnContentHeightPx(null, emptyMap()))
     }
 
     @Test

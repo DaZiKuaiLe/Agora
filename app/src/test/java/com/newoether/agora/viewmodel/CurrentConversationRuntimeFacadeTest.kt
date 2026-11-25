@@ -29,6 +29,7 @@ class CurrentConversationRuntimeFacadeTest {
 
         assertTrue(facade.queuedSends.value.isEmpty())
         assertFalse(facade.isStopping.value)
+        assertFalse(facade.cooperativeStopRequested.value)
         facade.removeQueuedSend("missing")
         runCurrent()
         verify(exactly = 0) { registry.getOrCreate(any()) }
@@ -38,8 +39,8 @@ class CurrentConversationRuntimeFacadeTest {
     fun conversationSwitchProjectsOnlyTheCurrentRuntime() = runTest {
         val currentConversationId = MutableStateFlow<String?>("first")
         val registry = mockk<ConversationStateRegistry>()
-        val first = runtimeState(listOf(queued("first")), stopping = true)
-        val second = runtimeState(listOf(queued("second")), stopping = false)
+        val first = runtimeState(listOf(queued("first")), stopping = true, stopRequested = true)
+        val second = runtimeState(listOf(queued("second")), stopping = false, stopRequested = false)
         every { registry.getOrCreate("first") } returns first
         every { registry.getOrCreate("second") } returns second
         val facade = CurrentConversationRuntimeFacade(
@@ -52,11 +53,13 @@ class CurrentConversationRuntimeFacadeTest {
 
         assertEquals(listOf("first"), facade.queuedSends.value.map { it.id })
         assertTrue(facade.isStopping.value)
+        assertTrue(facade.cooperativeStopRequested.value)
         currentConversationId.value = "second"
         runCurrent()
 
         assertEquals(listOf("second"), facade.queuedSends.value.map { it.id })
         assertFalse(facade.isStopping.value)
+        assertFalse(facade.cooperativeStopRequested.value)
     }
 
     @Test
@@ -85,9 +88,11 @@ class CurrentConversationRuntimeFacadeTest {
         fun runtimeState(
             queuedSends: List<QueuedSend>,
             stopping: Boolean,
+            stopRequested: Boolean = false,
         ): ConversationGenerationState = mockk<ConversationGenerationState>().also { state ->
             every { state.queuedSends } returns MutableStateFlow(queuedSends)
             every { state.stopping } returns MutableStateFlow(stopping)
+            every { state.cooperativeStopRequested } returns MutableStateFlow(stopRequested)
         }
 
         fun queued(id: String) = QueuedSend(

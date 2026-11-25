@@ -6,9 +6,7 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -19,7 +17,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -37,13 +34,17 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.newoether.agora.R
 import com.newoether.agora.TopLevelPresentation
 import com.newoether.agora.data.forDisplay
@@ -67,7 +68,12 @@ import com.newoether.agora.model.StableMessageList
 import com.newoether.agora.model.StableModelAliases
 import com.newoether.agora.viewmodel.AnimatedScrollDestination
 import com.newoether.agora.viewmodel.ChatViewModel
+import com.newoether.agora.viewmodel.earlierTranscriptPageGeneration
+import com.newoether.agora.viewmodel.hasEarlierTranscriptPage
+import com.newoether.agora.viewmodel.isLastTranscriptPage
+import com.newoether.agora.viewmodel.showEarlierTranscriptPage
 import com.newoether.agora.viewmodel.RegenerationTransitionStage
+import com.newoether.agora.viewmodel.loadMessageDetail
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -97,6 +103,16 @@ fun ChatApp(
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) {
+                focusManager.clearFocus(force = true)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val motionPolicy = LocalAgoraMotionPolicy.current
     ConversationShareEffect(viewModel, context)
 
@@ -121,19 +137,17 @@ fun ChatApp(
     val isLoading by viewModel.isLoading.collectAsState()
     val isCompacting by viewModel.isCompacting.collectAsState()
     val compactModel by viewModel.settings.contextCompactModel.collectAsState()
-    val compactPrompt by viewModel.settings.contextCompactPrompt.collectAsState()
-    val compactRetainCount by viewModel.settings.contextCompactRetainCount.collectAsState()
     val manualCompactDialogVisible = rememberSaveable { mutableStateOf(false) }
     val dialogState = rememberChatAppDialogState(manualCompactDialogVisible)
     val queuedSends by viewModel.queuedSends.collectAsState()
     val isStopping by viewModel.isStopping.collectAsState()
+    val isStopRequested by viewModel.cooperativeStopRequested.collectAsState()
     val currentConversationId by viewModel.currentConversationId.collectAsState()
     var pendingForkRequest by remember(currentConversationId) { mutableStateOf<ForkConversationRequest?>(null) }
     val currentConversation by viewModel.currentConversation.collectAsState()
     val loadedMessagesConversationId by viewModel.loadedMessagesConversationId.collectAsState()
     val currentLoop by viewModel.currentLoop.collectAsState()
     val runningLoopIds by viewModel.runningLoopConversationIds.collectAsState()
-    val generationSnapshot by viewModel.generationSnapshot.collectAsState()
     val selectedModel by viewModel.currentActiveModel.collectAsState()
     val enabledModels by viewModel.settings.enabledModels.collectAsState()
     val modelAliases by viewModel.settings.modelAliases.collectAsState()
@@ -144,7 +158,9 @@ fun ChatApp(
     val regenerationTransition by viewModel.regenerationTransition.collectAsState()
     val isTransitioningToNewChat by viewModel.isTransitioningToNewChat.collectAsState()
     val totalTokens by viewModel.totalTokens.collectAsState()
-    val visualizeContextRollout by viewModel.settings.visualizeContextRollout.collectAsState()
+    val isLastTranscriptPage by viewModel.isLastTranscriptPage.collectAsState()
+    val hasEarlierTranscriptPage by viewModel.hasEarlierTranscriptPage.collectAsState()
+    val earlierTranscriptPageGeneration by viewModel.earlierTranscriptPageGeneration.collectAsState()
     val globalCodeExecution by viewModel.settings.codeExecutionEnabled.collectAsState()
     val globalGoogleSearch by viewModel.settings.googleSearchEnabled.collectAsState()
     val customProviders by viewModel.settings.customProviders.collectAsState()
@@ -182,11 +198,12 @@ fun ChatApp(
     // Web Search and Shell: global switch OFF → always false, regardless of override
     val webSearchEnabled = globalWebSearch && (convOverride?.webSearchEnabled ?: true)
     val shellEnabled = globalShell && (convOverride?.shellEnabled ?: true)
+    val askModeEnabled = convOverride?.askModeEnabled ?: true
     val contextWindow = ContextBudget.normalize(activeModelGen.contextLimit ?: ContextBudget.DEFAULT_CONTEXT_LIMIT)
-    val contextProjectionKey = rememberContextProjectionInvalidationKey(viewModel, listOf(codeExecutionEnabled, googleSearchEnabled, webSearchEnabled, shellEnabled, shellDevices, currentConversation?.systemPromptId))
+    val contextProjectionKey = rememberContextProjectionInvalidationKey(viewModel, listOf(codeExecutionEnabled, googleSearchEnabled, webSearchEnabled, shellEnabled, askModeEnabled, shellDevices, currentConversation?.systemPromptId))
     val contextProjection = rememberConversationContextProjection(
         viewModel, currentConversationId, selectedModel, contextWindow,
-        allMessagesState.value,
+        false,
         contextProjectionKey,
     )
     val contextUsage = contextProjection.usage
@@ -251,7 +268,6 @@ fun ChatApp(
     )
     val listState = scrollCoordinator.listState
     val absoluteBottomScrollPhase = scrollCoordinator.absoluteBottomScrollPhase
-    val isNearAbsoluteBottom = scrollCoordinator.isNearAbsoluteBottom
     val isWithinAbsoluteBottomAttachThreshold =
         scrollCoordinator.isWithinAbsoluteBottomAttachThreshold
     val imeBottomAnchorState = scrollCoordinator.imeBottomAnchorState
@@ -287,7 +303,6 @@ fun ChatApp(
     LaunchedEffect(Unit) {
         delay(50)
         showLaunchContent = true
-        inputFocusRequester.requestFocus()
     }
 
 
@@ -342,7 +357,7 @@ fun ChatApp(
     )
 
     AnsweringHapticEffect(
-        generationSnapshot = generationSnapshot,
+        viewModel = viewModel,
         currentConversationId = currentConversationId,
         topLevelPresentation = topLevelPresentation,
         hapticsEnabled = hapticsEnabled,
@@ -406,66 +421,44 @@ fun ChatApp(
                 containerColor = Color.Transparent,
                 contentWindowInsets = WindowInsets(0, 0, 0, 0),
                 topBar = {
-                    ChatTopBar(
+                    ChatAppTopBar(
                         isNewChatMode = isNewChatMode,
-                        conversations = displayConversations,
                         currentConversationId = currentConversationId,
-                        currentConversationTitle = currentConversation?.title?.let {
-                            replaceCustomProviderIdsForDisplay(it, customProviders)
-                        },
                         totalTokens = totalTokens,
-                        searchActive = conversationSearchActive,
-                        searchQuery = conversationSearchQuery,
-                        searchMatchIndex = conversationSearchMatchIndex,
-                        searchMatchCount = conversationSearchMatches.size,
-                        conversationActionsEnabled =
-                            !isNewChatMode && currentConversationId != null && !isLoading &&
-                                !shareSelectionActive,
+                        messages = messagesState,
+                        listState = listState,
+                        conversationInteraction = conversationInteraction,
+                        conversationSearchActive = conversationSearchActive,
+                        conversationSearchQuery = conversationSearchQuery,
+                        conversationSearchMatchIndex = conversationSearchMatchIndex,
+                        conversationSearchMatchCount = conversationSearchMatches.size,
+                        isLoading = isLoading,
+                        shareSelectionActive = shareSelectionActive,
                         onNavigateBack = onNavigateBack,
-                        onOpenDrawer = {
-                            if (drawerEnabled) {
-                                focusManager.clearFocus()
-                                scope.launch { drawerState.openWithMotionPolicy(motionPolicy) }
-                            }
+                        drawerEnabled = drawerEnabled,
+                        drawerState = drawerState,
+                        motionPolicy = motionPolicy,
+                        focusManager = focusManager,
+                        scope = scope,
+                        haptics = haptics,
+                        viewModel = viewModel,
+                        dialogState = dialogState,
+                        onForkConversation = {
+                            pendingForkRequest = ForkConversationRequest(messageId = null)
                         },
-                        onSearchQueryChange = { query ->
-                            conversationInteraction.updateSearchQuery(query)
-                        },
-                        onSearchPrevious = {
-                            if (conversationInteraction.previousSearchMatch()) {
-                                haptics.selection()
-                            }
-                        },
-                        onSearchNext = {
-                            if (conversationInteraction.nextSearchMatch()) {
-                                haptics.selection()
-                            }
-                        },
-                        onSearchDismiss = {
-                            conversationInteraction.dismissSearch()
-                            focusManager.clearFocus()
-                        },
-                        onSearchClick = {
-                            conversationInteraction.activateSearch()
-                        },
-                        onSystemPromptClick = dialogState::showPrompt,
-                        onForkConversation = { pendingForkRequest = ForkConversationRequest(messageId = null) },
-                        onShareConversation = {
-                            conversationInteraction.dismissSearch()
-                            focusManager.clearFocus()
-                            conversationInteraction.activateShareSelection()
-                        },
-                        onNewChat = {
-                            if (!isNewChatMode) {
-                                isExpanded = false
-                                viewModel.createNewChat()
-                                inputFocusRequester.requestFocus()
-                            }
-                        },
+                        inputFocusRequester = inputFocusRequester,
+                        onBeforeNewChat = { isExpanded = false },
                     )
                 }
             ) { padding ->
                 Box(modifier = Modifier.fillMaxSize()) {
+                    BackgroundProcessHud(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .statusBarsPadding()
+                            .padding(start = 12.dp, top = 60.dp)
+                            .zIndex(2f),
+                    )
                     val topBarH = androidx.compose.foundation.layout.WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 64.dp
                     val pivotY =
                         ((windowHeightDp + topBarH.value / 2f - bottomBarHeight.value) / 2f)
@@ -522,6 +515,7 @@ fun ChatApp(
                                         conversationSearchActive ||
                                         shareSelectionActive ||
                                         !motionPolicy.allowProgrammaticScrollMotion,
+                                onLastPage = isLastTranscriptPage,
                                 programmaticHandoff =
                                     imeBottomAnchorState.active ||
                                         absoluteBottomScrollPhase.isActive ||
@@ -566,7 +560,7 @@ fun ChatApp(
                                 regenerationTransition = regenerationTransition,
                                 onRegenerationFadeOutFinished =
                                     viewModel::acknowledgeRegenerationFade,
-                                visualizeContextRollout = visualizeContextRollout,
+                                visualizeContextRollout = false,
                                 toolCallDisplayMode = toolCallDisplayMode,
                                 thinkingSegmentDisplayMode = thinkingSegmentDisplayMode,
                                 autoExpandActiveGroup = autoExpandActiveGroup,
@@ -597,12 +591,11 @@ fun ChatApp(
                                     accepted
                                 },
                                 onFork = { id -> pendingForkRequest = ForkConversationRequest(messageId = id) },
-                                onShare = { id ->
-                                    viewModel.shareGeneration(id)
+                                onShare = { id -> viewModel.shareGeneration(id) },
+                                onToggleCompactLock = { id, locked ->
+                                    viewModel.setCompactLocked(id, locked)
                                 },
-                                onRecompact = { id ->
-                                    viewModel.startContextRecompact(id)
-                                },
+                                onRecompact = { id -> viewModel.startContextRecompact(id) },
                                 onDelete = { id -> viewModel.deleteMessage(id) },
                                 searchQuery = if (conversationSearchActive) {
                                     conversationSearchQuery
@@ -614,6 +607,9 @@ fun ChatApp(
                                 onSearchMatchDistance = { key, distance ->
                                     conversationInteraction.recordSearchMatchDistance(key, distance)
                                 },
+                                pendingJumpMessageId = conversationInteraction.pendingJumpMessageId,
+                                pendingJumpToken = conversationInteraction.pendingJumpToken,
+                                onJumpConsumed = conversationInteraction::consumeJumpToMessage,
                                 selectionMode = shareSelectionActive,
                                 selectedMessageIds = selectedShareMessageIds,
                                 onToggleMessageSelection = { messageId ->
@@ -632,12 +628,19 @@ fun ChatApp(
                                     onPdfPagesClick?.invoke(pages, idx)
                                 },
                                 thoughtExpandedStates = thoughtExpandedStates,
+                                loadMessageDetail = viewModel::loadMessageDetail,
                                 contentPadding = PaddingValues(
                                     start = 8.dp,
                                     end = 8.dp,
                                     top = 140.dp,
                                     bottom = bottomBarHeight + shareSelectionBarSpace + 8.dp
                                 )
+                            )
+                            TranscriptPageChrome(
+                                listState = listState,
+                                hasEarlierPage = hasEarlierTranscriptPage,
+                                earlierPageGeneration = earlierTranscriptPageGeneration,
+                                onPreviousPage = viewModel::showEarlierTranscriptPage,
                             )
                             }
                         } else if (targetShowLaunch) {
@@ -677,79 +680,6 @@ fun ChatApp(
                             }
                         } else {
                             Box(modifier = Modifier.fillMaxSize())
-                        }
-                    }
-
-                    // Recreate for every plain value captured by this derived state.
-                    val regenerationScrollActive =
-                        regenerationTransition?.conversationId == currentConversationId &&
-                            regenerationTransition?.scrollFinished == false
-                    val showButton by remember(
-                        currentConversationId,
-                        loadedMessagesConversationId,
-                        isNewChatMode,
-                        isSwitching,
-                        shareSelectionActive,
-                        isNearAbsoluteBottom,
-                        absoluteBottomScrollPhase,
-                        listState,
-                        streamingTailController,
-                        regenerationScrollActive,
-                        imeBottomAnchorState.active,
-                    ) {
-                        derivedStateOf {
-                            val totalItemsCount = listState.layoutInfo.totalItemsCount
-                            shouldShowAbsoluteBottomButton(
-                                isNewChatMode = isNewChatMode,
-                                isSwitching = isSwitching,
-                                conversationContentReady =
-                                    currentConversationId != null &&
-                                        loadedMessagesConversationId == currentConversationId,
-                                shareSelectionActive = shareSelectionActive,
-                                hasItems = totalItemsCount > 1,
-                                canScrollForward = listState.canScrollForward,
-                                isNearBottom = isNearAbsoluteBottom,
-                                isStreamingAutoFollowing =
-                                    streamingTailController.isAutoFollowing,
-                                scrollPhase = absoluteBottomScrollPhase,
-                                competingProgrammaticScrollActive =
-                                    regenerationScrollActive ||
-                                        imeBottomAnchorState.active,
-                            )
-                        }
-                    }
-
-                    val fabElevation by animateDpAsState(
-                        targetValue = if (showButton) 4.dp else 0.dp,
-                        animationSpec = if (motionPolicy.allowSpatialTransitions) {
-                            tween(400)
-                        } else {
-                            snap()
-                        }
-                    )
-
-                    AnimatedVisibility(
-                        visible = showButton,
-                        enter = if (motionPolicy.allowSpatialTransitions) {
-                            fadeIn(tween(400)) +
-                                scaleIn(initialScale = 0.6f, animationSpec = tween(400))
-                        } else {
-                            fadeIn(tween(400))
-                        },
-                        exit = if (motionPolicy.allowSpatialTransitions) {
-                            fadeOut(tween(400)) +
-                                scaleOut(targetScale = 0.6f, animationSpec = tween(400))
-                        } else {
-                            fadeOut(tween(400))
-                        },
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottomBarHeight + 8.dp)
-                    ) {
-                        Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                            FloatingActionButton(onClick = {
-                                scrollCoordinator.requestAbsoluteBottomScroll()
-                            }, containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(4.dp), contentColor = MaterialTheme.colorScheme.onSurface, shape = CircleShape, elevation = FloatingActionButtonDefaults.elevation(fabElevation), modifier = Modifier.size(40.dp)) {
-                                Icon(Icons.Default.KeyboardArrowDown, stringResource(R.string.scroll_to_bottom), modifier = Modifier.size(24.dp))
-                            }
                         }
                     }
 
@@ -895,6 +825,10 @@ fun ChatApp(
                             haptics.interrupt()
                             viewModel.stopGeneration()
                         },
+                        onForceStopGeneration = {
+                            haptics.interrupt()
+                            viewModel.forceStopGeneration()
+                        },
                         isLoading = isLoading,
                         isCompacting = isCompacting,
                         isSwitching = isSwitching,
@@ -918,6 +852,8 @@ fun ChatApp(
                         onWebSearchToggle = { enabled -> haptics.toggle(enabled); viewModel.updateConversationSetting(currentConversationId) { it.copy(webSearchEnabled = enabled) } },
                         shellEnabled = shellEnabled,
                         onShellToggle = { enabled -> haptics.toggle(enabled); viewModel.updateConversationSetting(currentConversationId) { it.copy(shellEnabled = enabled) } },
+                        askModeEnabled = askModeEnabled,
+                        onAskModeToggle = { enabled -> haptics.toggle(enabled); viewModel.updateConversationSetting(currentConversationId) { it.copy(askModeEnabled = enabled) } },
                         // The model row owns its selection tick. Repeating it here produced the
                         // previous double buzz for one physical tap.
                         onModelSelect = { viewModel.setActiveModel(it) },
@@ -944,24 +880,25 @@ fun ChatApp(
                         onInitPdfSelection = onInitPdfSelection,
                         fullScreenViewerUrls = fullScreenViewerUrls,
                         compactDefaultModel = compactModel,
-                        compactDefaultPrompt = compactPrompt,
-                        compactDefaultRetainCount = compactRetainCount,
                         contextEstimatedTokens = contextUsage.estimatedTokenCount,
                         contextTokenBudget = contextUsage.tokenBudget,
                         canCompact = currentConversationId != null && !isLoading && !isSwitching && !isStopping,
-                        onCompactClick = {
-                            dialogState.showManualCompact()
+                        onFullOptimizeClick = {
+                            dialogState.showFullOptimize()
                         },
                         onAdvancedClick = dialogState::showAdvanced,
                         queuedSends = queuedSends,
                         onRemoveQueuedSend = viewModel::removeQueuedSend,
                         isStopping = isStopping,
+                        isStopRequested = isStopRequested,
                     )
                             }
                         }
                     }
                 }
             }
+
+            ContextCompactBlockingOverlay(isCompacting, viewModel.compactBatchProgress)
             }
         }
         }
@@ -972,11 +909,12 @@ fun ChatApp(
         haptics = haptics,
         compactModel = compactModel,
         selectedModel = selectedModel,
-        compactPrompt = compactPrompt,
-        compactRetainCount = compactRetainCount,
         enabledModels = enabledModels,
         modelAliases = modelAliases, customProviders = customProviders,
         isCompacting = isCompacting,
+        contextTokenBudget = contextWindow,
+        conversationId = currentConversationId,
+        toolConfigurationKey = contextProjectionKey,
     )
 
     ChatForkConfirmationHost(pendingForkRequest, viewModel) { pendingForkRequest = null }

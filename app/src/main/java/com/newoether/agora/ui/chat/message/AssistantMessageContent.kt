@@ -208,6 +208,7 @@ internal fun AssistantMessageContent(
     onRegenerate: (String) -> Boolean,
     onFork: () -> Unit,
     onShare: () -> Unit,
+    @Suppress("UNUSED_PARAMETER") onToggleCompactLock: () -> Unit,
     onMediaClick: (List<String>, Int) -> Unit,
     onShowInfo: () -> Unit,
     onShowDelete: () -> Unit,

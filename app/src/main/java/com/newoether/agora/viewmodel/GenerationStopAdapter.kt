@@ -1,5 +1,7 @@
 package com.newoether.agora.viewmodel
 
+import android.os.Handler
+import android.os.Looper
 import com.newoether.agora.model.ChatMessage
 import com.newoether.agora.model.MessageStatus
 import com.newoether.agora.model.Participant
@@ -18,7 +20,14 @@ internal class GenerationStopAdapter(
     private val finalizer: GenerationFinalizer,
     private val failureText: () -> String,
     private val onFailure: (String) -> Unit,
+    private val applyRenderUpdate: (() -> Unit) -> Unit = ::postToMainLooper,
 ) {
+    fun requestVisibleConversationStop() {
+        val conversationId = currentConversationId.value ?: return
+        val state = registry.get(conversationId) ?: return
+        state.markCooperativeStopRequested()
+    }
+
     fun stopVisibleConversation() {
         val conversationId = currentConversationId.value ?: return
         val state = registry.get(conversationId) ?: return
@@ -48,7 +57,9 @@ internal class GenerationStopAdapter(
                             stoppedMessage != null &&
                             currentConversationId.value == result.conversationId
                         ) {
-                            renderStore.commitTerminalStreamingMessage(stoppedMessage)
+                            applyRenderUpdate {
+                                renderStore.commitTerminalStreamingMessage(stoppedMessage)
+                            }
                         }
                         state.clearStoppedOverlay()
                     } else {
@@ -60,20 +71,25 @@ internal class GenerationStopAdapter(
     }
 
     private fun snapshotVisibleStoppedRows(): List<ChatMessage> = runCatching {
-        renderStore.allMessages.mapNotNull { message ->
+        val stopped = renderStore.allMessages.mapNotNull { message ->
             if (
                 (message.participant == Participant.MODEL || message.isContextCompact()) &&
                 message.status.isInFlight()
             ) {
-                message.copy(status = MessageStatus.STOPPED).also { stopped ->
-                    renderStore.updateAllMessages { rows ->
-                        rows.map { if (it.id == message.id) stopped else it }
-                    }
-                }
+                message.copy(status = MessageStatus.STOPPED)
             } else {
                 null
             }
         }
+        if (stopped.isNotEmpty()) {
+            val byId = stopped.associateBy { it.id }
+            applyRenderUpdate {
+                renderStore.updateAllMessages { rows ->
+                    rows.map { row -> byId[row.id] ?: row }
+                }
+            }
+        }
+        stopped
     }.getOrElse { error ->
         DebugLog.e("GenerationStopAdapter", "Failed to snapshot stopped render rows", error)
         emptyList()
@@ -85,3 +101,9 @@ private fun MessageStatus.isInFlight(): Boolean =
         this == MessageStatus.THINKING ||
         this == MessageStatus.TOOL_CALLING ||
         this == MessageStatus.TRANSCRIBING
+
+private fun postToMainLooper(action: () -> Unit) {
+    val main = Looper.getMainLooper()
+    if (Looper.myLooper() == main) action()
+    else Handler(main).post(action)
+}

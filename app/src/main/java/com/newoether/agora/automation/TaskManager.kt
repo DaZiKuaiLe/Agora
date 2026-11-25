@@ -1,7 +1,6 @@
 package com.newoether.agora.automation
 
 import com.newoether.agora.data.local.ChatEntity
-import com.newoether.agora.data.local.MessageEntity
 import com.newoether.agora.data.local.TaskEntity
 import com.newoether.agora.data.repository.ConversationRepository
 import com.newoether.agora.data.repository.TaskRepository
@@ -97,14 +96,9 @@ class TaskManager(
     /** Observes both tables so a message status transition refreshes the execution log instantly. */
     fun executionSummariesForTask(taskId: String): Flow<List<ExecutionSummary>> = combine(
         conversationRepository.getExecutionsForTask(taskId),
-        conversationRepository.observeExecutionMessagesForTask(taskId),
-    ) { executions, messages ->
-        val latestByConversation = messages
-            .asSequence()
-            .filter { it.participant == Participant.MODEL || it.participant == Participant.ERROR }
-            .filterNot(::isSyntheticToolMessage)
-            .groupBy { it.conversationId }
-            .mapValues { (_, values) -> values.maxByOrNull { it.timestamp } }
+        conversationRepository.observeExecutionPreviewsForTask(taskId),
+    ) { executions, previews ->
+        val latestByConversation = previews.associateBy { it.conversationId }
         executions.map { conversation ->
             val last = latestByConversation[conversation.id]
             ExecutionSummary(
@@ -433,13 +427,27 @@ class TaskManager(
      * process-interrupted attempts are terminal for this occurrence.
      */
     private suspend fun recoverExistingExecution(existing: ChatEntity): ExecutionResult? {
-        val messages = conversationRepository.getMessagesForConversationSnapshot(existing.id)
-        if (messages.isEmpty()) return null
-        val assistant = terminalAssistant(messages)
-        return when (assistant?.status) {
+        val graph = conversationRepository.getCompactMessageGraph(existing.id)
+        if (graph.isEmpty()) return null
+        val assistantRow = graph.asSequence()
+            .filter {
+                it.participant == Participant.MODEL || it.participant == Participant.ERROR
+            }
+            .filterNot {
+                it.id.startsWith(Constants.TOOL_MSG_PREFIX) ||
+                    it.id.startsWith(Constants.RESULT_MSG_PREFIX)
+            }
+            .maxByOrNull { it.timestamp }
+            ?: return null
+        val hasTool = graph.any { row ->
+            row.id.startsWith(Constants.TOOL_MSG_PREFIX) ||
+                row.id.startsWith(Constants.RESULT_MSG_PREFIX)
+        }
+        val assistant = conversationRepository.getMessage(assistantRow.id) ?: return null
+        return when (assistant.status) {
             MessageStatus.SUCCESS -> ExecutionResult.Success(existing.id, assistant.text)
             MessageStatus.ERROR -> {
-                if (messages.any(::isSyntheticToolMessage)) {
+                if (hasTool) {
                     ExecutionResult.Failure(
                         existing.id,
                         assistant.text.ifBlank { "Previous attempt failed after executing a tool" },
@@ -457,16 +465,13 @@ class TaskManager(
             MessageStatus.SENDING,
             MessageStatus.THINKING,
             MessageStatus.TOOL_CALLING,
-            MessageStatus.TRANSCRIBING,
-            null -> {
-                assistant?.let {
-                    conversationRepository.upsertMessage(
-                        it.copy(
-                            text = "Execution interrupted before completion",
-                            status = MessageStatus.ERROR,
-                        )
+            MessageStatus.TRANSCRIBING -> {
+                conversationRepository.upsertMessage(
+                    assistant.copy(
+                        text = "Execution interrupted before completion",
+                        status = MessageStatus.ERROR,
                     )
-                }
+                )
                 ExecutionResult.Failure(
                     existing.id,
                     "Execution interrupted before completion",
@@ -475,16 +480,6 @@ class TaskManager(
             }
         }
     }
-
-    private fun terminalAssistant(messages: List<MessageEntity>): MessageEntity? = messages
-        .asSequence()
-        .filter { it.participant == Participant.MODEL || it.participant == Participant.ERROR }
-        .filterNot(::isSyntheticToolMessage)
-        .maxByOrNull { it.timestamp }
-
-    private fun isSyntheticToolMessage(message: MessageEntity): Boolean =
-        message.id.startsWith(Constants.TOOL_MSG_PREFIX) ||
-            message.id.startsWith(Constants.RESULT_MSG_PREFIX)
 
     private fun isRetryableFailure(reason: String): Boolean =
         !reason.startsWith("No model selected") &&

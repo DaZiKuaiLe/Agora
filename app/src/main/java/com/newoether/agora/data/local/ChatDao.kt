@@ -45,9 +45,6 @@ interface ChatDao : ChatAutomationDao, ChatContextCompactDao {
     @Query("SELECT * FROM conversations WHERE id = :conversationId")
     fun observeConversation(conversationId: String): Flow<ChatEntity?>
 
-    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp ASC")
-    fun getMessagesForConversation(conversationId: String): Flow<List<MessageEntity>>
-
     @Query(
         """
         UPDATE messages
@@ -58,120 +55,36 @@ interface ChatDao : ChatAutomationDao, ChatContextCompactDao {
     )
     suspend fun stopStuckMessagesForConversation(conversationId: String): Int
 
-    /**
-     * UI projection of the message graph. Synthetic protocol rows are required for parent-path
-     * traversal, but their text/segments can be very large and are never rendered. While an
-     * in-memory overlay owns [streamingMessageId], that row is also projected as a stable,
-     * lightweight SENDING placeholder. Room may re-run this table query after a checkpoint, but
-     * the equal result is suppressed before JSON projection/Compose and no large live payload
-     * crosses the Cursor boundary.
-     */
-    @Query(
-        """
-        SELECT
-            id,
-            conversationId,
-            parentId,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN ''
-                ELSE text
-            END AS text,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN '[]'
-                ELSE images
-            END AS images,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN NULL
-                ELSE thoughts
-            END AS thoughts,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN NULL
-                ELSE thoughtTitle
-            END AS thoughtTitle,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN 0
-                ELSE tokenCount
-            END AS tokenCount,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN NULL
-                ELSE inputTokenCount
-            END AS inputTokenCount,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN NULL
-                ELSE cachedInputTokenCount
-            END AS cachedInputTokenCount,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN NULL
-                ELSE uncachedInputTokenCount
-            END AS uncachedInputTokenCount,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN NULL
-                ELSE outputTokenCount
-            END AS outputTokenCount,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN NULL
-                ELSE reasoningTokenCount
-            END AS reasoningTokenCount,
-            CASE WHEN id = :streamingMessageId THEN 'SENDING' ELSE status END AS status,
-            participant,
-            timestamp,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN NULL
-                ELSE thoughtTimeMs
-            END AS thoughtTimeMs,
-            modelName,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN NULL
-                ELSE toolCallJson
-            END AS toolCallJson,
-            CASE
-                WHEN id = :streamingMessageId
-                    OR substr(id, 1, 5) = 'tool_'
-                    OR substr(id, 1, 7) = 'result_' THEN NULL
-                ELSE attachmentMeta
-            END AS attachmentMeta,
-            runId,
-            runSequence,
-            consumedAtPass
-        FROM messages
-        WHERE conversationId = :conversationId
-        ORDER BY timestamp ASC
-        """
-    )
-    fun getUiMessagesForConversation(
-        conversationId: String,
-        streamingMessageId: String?,
-    ): Flow<List<MessageEntity>>
-
     @Upsert
     suspend fun upsertConversation(conversation: ChatEntity)
 
     @Query("UPDATE conversations SET title = :title WHERE id = :conversationId")
     suspend fun updateConversationTitle(conversationId: String, title: String): Int
+
+    @Query(
+        """
+        UPDATE conversations
+        SET digestActiveMemoryRev = :activeMemoryRev,
+            digestPromptRev = :promptRev,
+            digestPromptId = :promptId
+        WHERE id = :conversationId
+        """
+    )
+    suspend fun setDigestBackground(
+        conversationId: String,
+        activeMemoryRev: Long,
+        promptRev: Long,
+        promptId: String?,
+    ): Int
+
+    @Query(
+        """
+        UPDATE conversations
+        SET compactFormatRev = :rev
+        WHERE id = :conversationId
+        """
+    )
+    suspend fun setCompactFormatRev(conversationId: String, rev: Int): Int
 
     @Query(
         """
@@ -206,6 +119,61 @@ interface ChatDao : ChatAutomationDao, ChatContextCompactDao {
 
     @Upsert
     suspend fun upsertMessage(message: MessageEntity)
+
+    @Query(
+        """
+        UPDATE messages
+        SET turnId = :turnId
+        WHERE id = :messageId AND (turnId IS NULL OR turnId = '')
+        """,
+    )
+    suspend fun assignTurnIdIfAbsent(messageId: String, turnId: String): Int
+
+    @Query(
+        """
+        UPDATE messages
+        SET compactLocked = :locked
+        WHERE id = :messageId
+          AND (compactBatchId IS NULL OR compactBatchId = '')
+        """,
+    )
+    suspend fun setCompactLockedIfUnbatched(messageId: String, locked: Boolean): Int
+
+    @Query(
+        """
+        UPDATE messages
+        SET compactBatchId = :batchId, compactSummary = :summary
+        WHERE turnId = :turnId
+        """,
+    )
+    suspend fun attachCompactBatch(
+        turnId: String,
+        batchId: String,
+        summary: String?,
+    ): Int
+
+    @Query(
+        """
+        UPDATE messages
+        SET compactBatchId = NULL,
+            compactSummary = NULL,
+            compactDigest = NULL,
+            compactDigestRev = 0
+        WHERE conversationId = :conversationId
+          AND compactBatchId IS NOT NULL
+          AND compactBatchId != ''
+        """,
+    )
+    suspend fun clearCompactBatches(conversationId: String): Int
+
+    @Query(
+        """
+        UPDATE messages
+        SET compactDigest = :digest, compactDigestRev = :rev
+        WHERE turnId = :turnId
+        """,
+    )
+    suspend fun setCompactDigest(turnId: String, digest: String, rev: Int): Int
 
     // Runs
     @Upsert
@@ -538,7 +506,7 @@ interface ChatDao : ChatAutomationDao, ChatContextCompactDao {
     suspend fun recoverOrphanedRuns(at: Long): Int {
         val orphanedRuns = getOrphanedLiveRuns()
         if (orphanedRuns.isEmpty()) return 0
-        val messagesByRun = getMessagesForRuns(orphanedRuns.map { it.id })
+        val messagesByRun = getInFlightMessagesForRuns(orphanedRuns.map { it.id })
             .groupBy { it.runId }
         orphanedRuns.forEach { run ->
             val snapshot = RunRecoverySnapshot(
@@ -614,6 +582,9 @@ interface ChatDao : ChatAutomationDao, ChatContextCompactDao {
     @Query("DELETE FROM conversations WHERE id = :conversationId")
     suspend fun deleteConversation(conversationId: String)
 
+    @Query("SELECT id FROM messages WHERE conversationId = :conversationId")
+    suspend fun messageIdsForConversation(conversationId: String): List<String>
+
     @Query("DELETE FROM messages WHERE conversationId = :conversationId")
     suspend fun deleteMessagesByConversation(conversationId: String)
 
@@ -627,8 +598,11 @@ interface ChatDao : ChatAutomationDao, ChatContextCompactDao {
     suspend fun deleteOrphanedEmbeddings()
 
     /** [query] must be pre-escaped for LIKE (see ConversationRepository.escapeLikePattern). */
-    @Query("SELECT m.* FROM messages m INNER JOIN conversations c ON m.conversationId = c.id WHERE c.taskId IS NULL AND (m.text LIKE '%' || :query || '%' ESCAPE '\\' OR c.title LIKE '%' || :query || '%' ESCAPE '\\') AND m.participant IN ('USER', 'MODEL') AND m.text != '' AND substr(m.id, 1, 5) != 'tool_' AND substr(m.id, 1, 7) != 'result_' ORDER BY m.timestamp DESC, m.id DESC LIMIT :limit")
+    @Query("SELECT m.* FROM messages m INNER JOIN conversations c ON m.conversationId = c.id WHERE c.taskId IS NULL AND (m.text LIKE '%' || :query || '%' ESCAPE '\\' OR c.title LIKE '%' || :query || '%' ESCAPE '\\') AND m.participant IN ('USER', 'MODEL') AND m.text != '' AND substr(m.id, 1, 5) != 'tool_' AND substr(m.id, 1, 7) != 'result_' AND substr(m.id, 1, 7) != 'bgproc_' ORDER BY m.timestamp DESC, m.id DESC LIMIT :limit")
     suspend fun searchMessages(query: String, limit: Int = 10): List<MessageEntity>
+
+    @Query("SELECT * FROM messages WHERE conversationId = :conversationId AND text LIKE '%' || :query || '%' ESCAPE '\\' AND participant IN ('USER', 'MODEL') AND text != '' AND substr(id, 1, 5) != 'tool_' AND substr(id, 1, 7) != 'result_' AND substr(id, 1, 7) != 'bgproc_' ORDER BY timestamp DESC, id DESC LIMIT :limit")
+    suspend fun searchMessagesInConversation(conversationId: String, query: String, limit: Int): List<MessageEntity>
 
     @Query("SELECT m.* FROM messages m INNER JOIN conversations c ON m.conversationId = c.id WHERE c.taskId IS NULL AND m.toolCallJson LIKE '%\"type\":\"citation\"%' AND m.participant = 'MODEL' AND substr(m.id, 1, 5) != 'tool_' AND substr(m.id, 1, 7) != 'result_' AND m.id > :afterId ORDER BY m.id ASC LIMIT :pageSize")
     suspend fun getMessagesWithCitationSegmentsPage(
@@ -636,13 +610,29 @@ interface ChatDao : ChatAutomationDao, ChatContextCompactDao {
         pageSize: Int,
     ): List<MessageEntity>
 
-    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp DESC LIMIT 1")
-    suspend fun getLastMessageForConversation(conversationId: String): MessageEntity?
-
-    /** Message invalidations for task execution summaries. Unlike getExecutionsForTask(),
-     * this Flow observes the messages table, so terminal status/snippet changes are emitted. */
-    @Query("SELECT m.* FROM messages m INNER JOIN conversations c ON m.conversationId = c.id WHERE c.taskId = :taskId ORDER BY m.timestamp ASC")
-    fun observeExecutionMessagesForTask(taskId: String): Flow<List<MessageEntity>>
+    @Query(
+        """
+        SELECT m.conversationId, m.text, m.status, m.timestamp
+        FROM messages m
+        INNER JOIN conversations c ON m.conversationId = c.id
+        WHERE c.taskId = :taskId
+          AND m.participant IN ('MODEL', 'ERROR')
+          AND substr(m.id, 1, 5) != 'tool_'
+          AND substr(m.id, 1, 7) != 'result_'
+          AND NOT EXISTS (
+              SELECT 1 FROM messages newer
+              WHERE newer.conversationId = m.conversationId
+                AND newer.participant IN ('MODEL', 'ERROR')
+                AND substr(newer.id, 1, 5) != 'tool_'
+                AND substr(newer.id, 1, 7) != 'result_'
+                AND (
+                    newer.timestamp > m.timestamp
+                    OR (newer.timestamp = m.timestamp AND newer.id > m.id)
+                )
+          )
+        """,
+    )
+    fun observeExecutionPreviewsForTask(taskId: String): Flow<List<ExecutionMessagePreview>>
 
     // Embeddings
     @Insert
@@ -744,6 +734,49 @@ interface ChatDao : ChatAutomationDao, ChatContextCompactDao {
 
     @Query("SELECT * FROM messages WHERE id IN (:ids)")
     suspend fun getMessagesByIds(ids: List<String>): List<MessageEntity>
+
+    /** Character count of the columns a context-detail hydrate would retain. Does not load bodies. */
+    @Query(
+        """
+        SELECT COALESCE(SUM(
+            length(COALESCE(text, '')) +
+            length(COALESCE(thoughts, '')) +
+            length(COALESCE(toolCallJson, '')) +
+            length(COALESCE(attachmentMeta, ''))
+        ), 0)
+        FROM messages
+        WHERE id IN (:ids)
+        """,
+    )
+    suspend fun sumMessageBodyChars(ids: List<String>): Long
+
+    @Query(
+        """
+        SELECT *
+        FROM messages
+        WHERE conversationId = :conversationId
+          AND participant = 'MODEL'
+          AND substr(id, 1, 5) != 'tool_'
+          AND substr(id, 1, 7) != 'result_'
+          AND toolCallJson IS NOT NULL
+          AND instr(toolCallJson, :processId) > 0
+        """,
+    )
+    suspend fun getVisibleModelMessagesContaining(
+        conversationId: String,
+        processId: String,
+    ): List<MessageEntity>
+
+    @Query(
+        """
+        UPDATE messages
+        SET toolCallJson = :toolCallJson
+        WHERE id = :id
+          AND substr(id, 1, 5) != 'tool_'
+          AND substr(id, 1, 7) != 'result_'
+        """,
+    )
+    suspend fun updateVisibleMessageToolCallJson(id: String, toolCallJson: String?): Int
 
     @Query("SELECT m.* FROM messages m INNER JOIN conversations c ON m.conversationId = c.id WHERE m.id IN (:ids) AND c.taskId IS NULL AND m.participant IN ('USER', 'MODEL') AND m.text != '' AND m.id NOT LIKE 'tool_%' AND m.id NOT LIKE 'result_%' AND m.id NOT LIKE 'compact_%'")
     suspend fun getSearchableMessagesByIds(ids: List<String>): List<MessageEntity>
@@ -901,5 +934,47 @@ interface ChatDao : ChatAutomationDao, ChatContextCompactDao {
         renameConversationProviderModelReferences(oldProvider, newProvider)
         renameTaskProviderModelReferences(oldProvider, newProvider)
         renameMessageProviderModelReferences(oldProvider, newProvider)
+    }
+
+    /**
+     * One commit after compact's model calls have finished. Markers, digest, and the occupancy
+     * number land together; a kill mid-write rolls the whole commit back.
+     */
+    @Transaction
+    suspend fun commitCompactResidency(
+        conversationId: String,
+        clearExistingBatches: Boolean,
+        coveredTurnIds: List<String>,
+        batchId: String,
+        digestTurnId: String?,
+        digest: String?,
+        digestRev: Int,
+        formatRev: Int?,
+        tokens: Int,
+        countedTurnId: String?,
+        budget: Int,
+        retainTurns: Int,
+        fixedCost: Int,
+        configKey: String?,
+        prefixTokens: Int,
+    ) {
+        if (clearExistingBatches) clearCompactBatches(conversationId)
+        for (turnId in coveredTurnIds) {
+            attachCompactBatch(turnId, batchId, null)
+        }
+        if (!digestTurnId.isNullOrBlank() && digest != null) {
+            setCompactDigest(digestTurnId, digest, digestRev)
+        }
+        if (formatRev != null) setCompactFormatRev(conversationId, formatRev)
+        setSendTokenCache(
+            conversationId = conversationId,
+            tokens = tokens,
+            countedTurnId = countedTurnId,
+            budget = budget,
+            retainTurns = retainTurns,
+            fixedCost = fixedCost,
+            configKey = configKey,
+            prefixTokens = prefixTokens,
+        )
     }
 }

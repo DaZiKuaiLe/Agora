@@ -93,11 +93,17 @@ A completion notification means one complete generation Run has ended. A provide
 
 Notify at most once per Run and only when no subsequent pass remains. Pending guidance belongs to a new Run, never the origin Run; while that fresh Run is pending, suppress the origin Run's notification so the immediate handoff does not notify twice. Stop/cancellation/error follow the existing product notification policy but cannot produce duplicate “completed” events.
 
-## 8. Shell job tools
+## 8. Process tools
 
-Foreground shell timeout may promote execution to a durable background job without killing it. `wait_for_job` is the default blocking tool; `get_shell_job` remains a bounded status peek. The advertised single-wait ceiling must match the actual tool execution ceiling (currently 295 seconds), and longer waits require another call.
+Conch durable jobs (`wait_for_job` / `get_shell_job` / `job_id`) are deprecated; see [conch-deprecation.md](conch-deprecation.md). Do not promote a timed-out `execute_local_command` / `execute_remote_command` into a process — sync timeout kills it.
 
-Output truncation/scan warnings are not fatal command failures and preserve a successful exit code. Fatal process/transport errors remain distinguishable. Background-job persistence must not race terminal-state publication and orphan recovery.
+Work that may take 5 seconds or more, has unknown duration, or must free the model to speak or start other work uses `start_local_process` / `start_remote_process`. `wait_ms` is optional and defaults to 0 (return `{running, process_id}` immediately if still running). If the process finishes in that budget, return exit/stdout/stderr. Otherwise do not kill it; return `{running, process_id}` (partial output allowed). Follow-up tools are `get_process` (peek), `wait_process` (block again on the same id), and `stop_process`. The advertised single-wait ceiling must match the tool execution ceiling (currently 295 seconds); longer waits require another `wait_process`.
+
+`process_id` encodes site (`local:<uuid>` / `ssh:<deviceId>:<uuid>`). The registry is process-scoped. If the app dies or SSH drops, the process is gone unless the model used `nohup` itself.
+
+Optional `ok_exit` applies to exec tools only: if the exit code is in the set, return the code and byte lengths and store the body for `query_detail_store`; otherwise return the clipped body. Omit the parameter to always return the body. Never apply `ok_exit` to read/grep/list.
+
+Output truncation/scan warnings are not fatal command failures and preserve a successful exit code. Fatal process/transport errors remain distinguishable.
 
 ## 9. Provider rename
 

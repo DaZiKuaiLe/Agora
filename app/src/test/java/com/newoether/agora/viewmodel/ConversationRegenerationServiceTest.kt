@@ -42,7 +42,7 @@ class ConversationRegenerationServiceTest {
         assertEquals(null, fixture.transitions.request.value)
         assertFalse(state.generating.value)
         coVerify(exactly = 0) {
-            fixture.conversations.getMessagesForConversationSnapshot(any())
+            fixture.conversations.getMessagesByIds(any())
         }
         state.dispose()
         Unit
@@ -74,7 +74,7 @@ class ConversationRegenerationServiceTest {
         val fixture = Fixture()
         val state = ConversationGenerationState("conversation")
         coEvery {
-            fixture.conversations.getMessagesForConversationSnapshot("conversation")
+            fixture.conversations.getMessagesByIds(any())
         } returns listOf(SOURCE_USER_ENTITY, TARGET_MODEL_ENTITY)
         coEvery { fixture.conversations.getRun("source-run") } returns SOURCE_RUN
         val createdRun = slot<RunEntity>()
@@ -156,7 +156,7 @@ class ConversationRegenerationServiceTest {
         val createdRun = slot<RunEntity>()
         val createdMessages = slot<List<MessageEntity>>()
         coEvery {
-            fixture.conversations.getMessagesForConversationSnapshot("conversation")
+            fixture.conversations.getMessagesByIds(any())
         } returns listOf(SOURCE_USER_ENTITY, upperEntity, lowerEntity)
         coEvery {
             fixture.conversations.createRunWithMessages(

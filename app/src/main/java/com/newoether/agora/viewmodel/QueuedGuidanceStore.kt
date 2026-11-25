@@ -2,6 +2,7 @@ package com.newoether.agora.viewmodel
 
 import com.newoether.agora.model.AttachmentMeta
 import com.newoether.agora.model.SelectedAttachment
+import com.newoether.agora.model.isProcessCompletionNoticeId
 import com.newoether.agora.util.AttachmentFiles
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -102,11 +103,16 @@ internal class GuidanceLeaseStore(
         removed
     }
 
-    /** Transfer the pending batch to one explicit in-flight owner. */
+    /** Transfer the next homogeneous FIFO slice. Process-completion notices never merge with typed user sends. */
     fun claim(): GuidanceBatchLease? = synchronized(lock) {
         if (disposed || _queuedSends.value.isEmpty()) return null
-        val lease = GuidanceBatchLease(newLeaseId(), _queuedSends.value)
-        _queuedSends.value = emptyList()
+        val pending = _queuedSends.value
+        val firstIsProcessNotice = pending.first().id.isProcessCompletionNoticeId()
+        val batch = pending.takeWhile { queued ->
+            queued.id.isProcessCompletionNoticeId() == firstIsProcessNotice
+        }
+        val lease = GuidanceBatchLease(newLeaseId(), batch)
+        _queuedSends.value = pending.drop(batch.size)
         check(claimedGuidance.put(lease.id, lease.batch) == null)
         claimRevision += 1
         lease

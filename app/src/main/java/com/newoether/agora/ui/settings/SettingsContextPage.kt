@@ -5,10 +5,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AcUnit
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,6 +21,7 @@ import com.newoether.agora.R
 import com.newoether.agora.data.modelAliasDisplayName
 import com.newoether.agora.data.modelDisplayName
 import com.newoether.agora.data.providerDisplayName
+import com.newoether.agora.model.ContextBudget
 import com.newoether.agora.model.ModelId
 import com.newoether.agora.ui.common.PersistedSliderFeedbackGate
 import com.newoether.agora.viewmodel.ChatViewModel
@@ -28,17 +29,15 @@ import com.newoether.agora.viewmodel.ChatViewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsContextPage(viewModel: ChatViewModel, onBack: () -> Unit) {
-    val visualize by viewModel.settings.visualizeContextRollout.collectAsState()
     val compact by viewModel.settings.contextCompactEnabled.collectAsState()
     val compactModel by viewModel.settings.contextCompactModel.collectAsState()
-    val compactPrompt by viewModel.settings.contextCompactPrompt.collectAsState()
-    val retainCount by viewModel.settings.contextCompactRetainCount.collectAsState()
+    val batchSize by viewModel.settings.contextCompactBatchSize.collectAsState()
+    val freezeThreshold by viewModel.settings.contextCompactFreezeThreshold.collectAsState()
     val enabledModels by viewModel.settings.enabledModels.collectAsState()
     val aliases by viewModel.settings.modelAliases.collectAsState()
     val customProviders by viewModel.settings.customProviders.collectAsState()
     val showDocFab by viewModel.settings.showDocumentationFab.collectAsState()
     var modelDialog by remember { mutableStateOf(false) }
-    var promptDialog by remember { mutableStateOf(false) }
 
     CollapsingSettingsScaffold(
         title = stringResource(R.string.context_title),
@@ -46,33 +45,6 @@ fun SettingsContextPage(viewModel: ChatViewModel, onBack: () -> Unit) {
         floatingActionButton = { if (showDocFab) DocumentationFab("context.md") }
     ) {
         SettingsGroupColumn {
-            SettingsGroup(
-                title = stringResource(R.string.context_visualize),
-                items = listOf(
-                    {
-                        SettingsItem(
-                            headlineContent = { Text(stringResource(R.string.context_visualize)) },
-                            supportingContent = { Text(stringResource(R.string.context_visualize_desc)) },
-                            leadingContent = {
-                                Icon(
-                                    Icons.Default.Visibility,
-                                    null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            },
-                            trailingContent = {
-                                Switch(
-                                    checked = visualize,
-                                    onCheckedChange = viewModel.settings::setVisualizeContextRollout,
-                                )
-                            },
-                            modifier = Modifier.clickable {
-                                viewModel.settings.setVisualizeContextRollout(!visualize)
-                            },
-                        )
-                    },
-                ),
-            )
             SettingsGroup(
                 title = stringResource(R.string.context_compact),
                 items = buildList {
@@ -121,38 +93,66 @@ fun SettingsContextPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                     add {
                         val sliderGate = remember {
                             PersistedSliderFeedbackGate(
-                                initialPersisted = retainCount,
+                                initialPersisted = batchSize,
                                 toDisplay = { it.toFloat() },
                             )
                         }
-                        LaunchedEffect(retainCount) { sliderGate.reconcile(retainCount) }
+                        LaunchedEffect(batchSize) { sliderGate.reconcile(batchSize) }
                         val draft = sliderGate.displayed
                         ContextSliderItem(
                             icon = Icons.Default.Memory,
-                            label = stringResource(R.string.context_compact_retain),
-                            description = stringResource(R.string.context_compact_retain_desc),
+                            label = stringResource(R.string.context_compact_batch_size),
+                            description = stringResource(R.string.context_compact_batch_size_desc),
                             displayValue = draft.toInt().toString(),
                             sliderValue = draft,
-                            valueRange = 0f..20f,
-                            steps = 19,
+                            valueRange = 2f..32f,
+                            steps = 29,
                             onValueChange = sliderGate::updateFromGesture,
                             onValueChangeFinished = {
-                                val committed = draft.toInt()
-                                if (committed != retainCount) {
+                                val committed = draft.toInt().coerceIn(2, 32)
+                                if (committed != batchSize) {
                                     sliderGate.expectPersisted(committed, committed.toFloat())
-                                    viewModel.settings.setContextCompactRetainCount(committed)
+                                    viewModel.settings.setContextCompactBatchSize(committed)
                                 } else {
-                                    sliderGate.settleWithoutWrite(retainCount, committed.toFloat())
+                                    sliderGate.settleWithoutWrite(batchSize, committed.toFloat())
                                 }
                             },
                         )
                     }
                     add {
-                        PromptSettingItem(
-                            title = stringResource(R.string.context_compact_prompt),
-                            description = stringResource(R.string.context_compact_prompt_desc),
-                            prompt = compactPrompt,
-                            onClick = { promptDialog = true },
+                        val presets = ContextBudget.PRESETS
+                        fun presetIndex(tokens: Int) =
+                            presets.indices.minBy { kotlin.math.abs(presets[it] - tokens) }
+                        val sliderGate = remember {
+                            PersistedSliderFeedbackGate(
+                                initialPersisted = freezeThreshold,
+                                toDisplay = { presetIndex(it).toFloat() },
+                            )
+                        }
+                        LaunchedEffect(freezeThreshold) { sliderGate.reconcile(freezeThreshold) }
+                        val draftIndex = sliderGate.displayed.toInt()
+                            .coerceIn(0, presets.lastIndex)
+                        ContextSliderItem(
+                            icon = Icons.Default.AcUnit,
+                            label = stringResource(R.string.freeze_threshold),
+                            description = stringResource(R.string.freeze_threshold_desc),
+                            displayValue = ContextBudget.groupedLabel(presets[draftIndex]),
+                            sliderValue = draftIndex.toFloat(),
+                            valueRange = 0f..(presets.lastIndex).toFloat(),
+                            steps = (presets.size - 2).coerceAtLeast(0),
+                            onValueChange = sliderGate::updateFromGesture,
+                            onValueChangeFinished = {
+                                val committed = presets[draftIndex]
+                                if (committed != freezeThreshold) {
+                                    sliderGate.expectPersisted(committed, draftIndex.toFloat())
+                                    viewModel.settings.setContextCompactFreezeThreshold(committed)
+                                } else {
+                                    sliderGate.settleWithoutWrite(
+                                        freezeThreshold,
+                                        presetIndex(freezeThreshold).toFloat(),
+                                    )
+                                }
+                            },
                         )
                     }
                 },
@@ -207,14 +207,6 @@ fun SettingsContextPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                     Text(stringResource(R.string.provider_cancel))
                 }
             },
-        )
-    }
-    if (promptDialog) {
-        PromptEditDialog(
-            title = stringResource(R.string.context_compact_prompt),
-            initialPrompt = compactPrompt,
-            onDismiss = { promptDialog = false },
-            onSave = viewModel.settings::setContextCompactPrompt,
         )
     }
 }

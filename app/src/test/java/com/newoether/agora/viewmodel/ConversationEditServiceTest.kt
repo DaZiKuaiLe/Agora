@@ -46,7 +46,7 @@ class ConversationEditServiceTest {
         assertFalse(result)
         assertFalse(state.generating.value)
         coVerify(exactly = 0) {
-            fixture.conversations.getMessagesForConversationSnapshot(any())
+            fixture.conversations.getMessage(any())
         }
         coVerify(exactly = 0) {
             fixture.boundLauncher.launch(any(), any())
@@ -60,8 +60,14 @@ class ConversationEditServiceTest {
         val fixture = Fixture()
         val state = ConversationGenerationState("conversation")
         coEvery {
-            fixture.conversations.getMessagesForConversationSnapshot("conversation")
-        } returns listOf(SOURCE_ENTITY)
+            fixture.conversations.getMessage(any())
+        } answers {
+            when (firstArg<String>()) {
+                "source-input" -> SOURCE_ENTITY
+                else -> null
+            }
+        }
+        coEvery { fixture.conversations.getRun(any()) } returns null
         coEvery { fixture.conversations.getRun("source-run") } returns SOURCE_RUN
         coEvery {
             fixture.inputCloner.clone(

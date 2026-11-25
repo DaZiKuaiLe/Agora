@@ -4,7 +4,7 @@ Open **Settings → Conversation Search** to configure semantic access to previo
 
 ## Access
 
-**Access Past Conversations** is enabled by default. Disable it to prevent the model/tool path from retrieving prior conversation content. Active memory and saved-memory permissions are configured separately.
+**Access Past Conversations** is enabled by default. Disable it to prevent the model/tool path from retrieving prior conversation content. Active memory permission is configured separately.
 
 ## Retrieval
 

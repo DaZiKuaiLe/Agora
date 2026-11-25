@@ -26,6 +26,8 @@ internal object NativeBackupFormat {
 internal data class ShellDeviceSecrets(
     val apiKey: String = "",
     val sshPassword: String = "",
+    val sshPrivateKey: String = "",
+    val sshKeyPassphrase: String = "",
 )
 
 @Serializable
@@ -42,7 +44,7 @@ internal data class NativeBackupSecrets(
 )
 
 internal fun ShellDeviceConfig.withoutSecrets(): ShellDeviceConfig =
-    copy(apiKey = "", sshPassword = "")
+    copy(apiKey = "", sshPassword = "", sshPrivateKey = "", sshKeyPassphrase = "")
 
 internal fun McpServerConfig.withoutSecrets(): McpServerConfig =
     copy(headers = emptyMap())

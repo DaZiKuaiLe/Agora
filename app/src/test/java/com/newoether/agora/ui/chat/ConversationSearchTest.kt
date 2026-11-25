@@ -113,4 +113,18 @@ class ConversationSearchTest {
         assertTrue(findConversationSearchMatches(listOf(message), "private.example").isEmpty())
         assertTrue(findConversationSearchMatches(listOf(message), "turn0search7").isEmpty())
     }
+
+    @Test
+    fun processCompletionNoticesAreExcludedFromConversationSearch() {
+        val notice = ChatMessage(
+            id = "bgproc_1",
+            text = "【系统提示】\nprocess: 后台进程已结束\n\noutput:\nsecret-dump",
+            participant = Participant.USER,
+        )
+        val user = ChatMessage(id = "u1", text = "secret-dump later", participant = Participant.USER)
+
+        val matches = findConversationSearchMatches(listOf(notice, user), "secret-dump")
+
+        assertEquals(listOf("u1"), matches.map { it.messageId })
+    }
 }

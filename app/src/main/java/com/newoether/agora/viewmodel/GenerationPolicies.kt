@@ -1,11 +1,20 @@
 package com.newoether.agora.viewmodel
 
+import com.newoether.agora.api.util.isContextProjectionMessageId
 import com.newoether.agora.api.util.projectAssistantImagesToLatestUserMessage
 import com.newoether.agora.api.util.projectToolResultImagesToUserMessage
+import com.newoether.agora.data.appendWireSystemNotice
+import com.newoether.agora.data.isLeadingSystemNotice
+import com.newoether.agora.data.wireSystemNotice
+import com.newoether.agora.data.wireTimeLine
+import com.newoether.agora.data.wireWorkModeLine
+import java.time.ZoneId
 import com.newoether.agora.model.ChatMessage
 import com.newoether.agora.model.MessageSegment
 import com.newoether.agora.model.MessageStatus
 import com.newoether.agora.model.Participant
+import com.newoether.agora.model.isContextCompact
+import com.newoether.agora.model.isProcessCompletionNotice
 import com.newoether.agora.model.RunEndReason
 import com.newoether.agora.model.RunStatus
 import com.newoether.agora.util.Constants
@@ -44,6 +53,63 @@ internal fun generationTerminalDisposition(
         RunEndReason.MODEL_COMPLETED,
         markConversationUnread = !hasPendingGuidance,
     )
+}
+
+/**
+ * Status after the provider/tool loop returns. A cooperative Stop at a safe boundary is
+ * STOPPED even when the turn already has text or persisted tools. Natural completion (and
+ * queued-send steering) still uses the existing SUCCESS/ERROR rules, including the historical
+ * overwrite of a mere inactive-coroutine STOPPED when the turn has content.
+ */
+/**
+ * A provider can close a turn with a normal stop after thinking and still send no answer.
+ * That is a completed vendor response, not a dropped stream. Thoughts stay visible; the turn
+ * itself is not a successful answer.
+ */
+internal fun isThoughtOnlyVendorCompletion(
+    answer: String,
+    thoughts: String,
+    thinkingPlaceholder: String,
+    hasImages: Boolean,
+    endedAtGuidanceBoundary: Boolean,
+    endedForFollowUp: Boolean,
+    endedAtCooperativeStop: Boolean,
+    providerAlreadyFailed: Boolean,
+    jobCancelled: Boolean,
+    coroutineInactive: Boolean,
+): Boolean {
+    if (
+        hasImages ||
+        endedAtGuidanceBoundary ||
+        endedForFollowUp ||
+        endedAtCooperativeStop ||
+        providerAlreadyFailed ||
+        jobCancelled ||
+        coroutineInactive
+    ) {
+        return false
+    }
+    if (answer.isNotBlank()) return false
+    return thoughts.isNotBlank() && thoughts != thinkingPlaceholder
+}
+
+internal fun generationLoopExitStatus(
+    currentStatus: MessageStatus,
+    endedAtCooperativeStop: Boolean,
+    coroutineInactive: Boolean,
+    hasSuccessfulTurnContent: Boolean,
+    jobCancelled: Boolean,
+): MessageStatus {
+    if (endedAtCooperativeStop) return MessageStatus.STOPPED
+    var status = currentStatus
+    if (coroutineInactive) status = MessageStatus.STOPPED
+    if (status != MessageStatus.ERROR) {
+        status = if (hasSuccessfulTurnContent) MessageStatus.SUCCESS else MessageStatus.ERROR
+    }
+    if (jobCancelled && status != MessageStatus.ERROR) {
+        status = MessageStatus.STOPPED
+    }
+    return status
 }
 
 /**
@@ -167,7 +233,12 @@ internal fun applyUserTemplateToMessages(
     return messages.map { msg ->
         val isToolMessage = msg.id.startsWith(Constants.TOOL_MSG_PREFIX) ||
             msg.id.startsWith(Constants.RESULT_MSG_PREFIX)
-        if (!isToolMessage && msg.participant == Participant.USER && msg.text.isNotEmpty()) {
+        if (
+            !isToolMessage &&
+            !msg.isProcessCompletionNotice() &&
+            msg.participant == Participant.USER &&
+            msg.text.isNotEmpty()
+        ) {
             val ts = java.util.Date(msg.timestamp)
             val rp = prepend?.replace("{sent_time}", timeSdf.format(ts))?.replace("{sent_date}", dateSdf.format(ts)) ?: ""
             val ra = postpend?.replace("{sent_time}", timeSdf.format(ts))?.replace("{sent_date}", dateSdf.format(ts)) ?: ""
@@ -184,14 +255,68 @@ internal fun applyUserTemplateToMessages(
  * the transformations that happen immediately before that shared provider boundary, so admission
  * policy and the bottom-bar estimate cannot omit text or images that dispatch will actually send.
  */
+internal fun appendWireSystemNotices(
+    messages: List<ChatMessage>,
+    askMode: Boolean,
+    zone: ZoneId = ZoneId.systemDefault(),
+): List<ChatMessage> {
+    val latestUserNoticeId = messages.lastOrNull { message ->
+        message.acceptsUserWireNotice() && !isLeadingSystemNotice(message.text)
+    }?.id
+    return messages.map { message ->
+        when {
+            message.id.startsWith(Constants.RESULT_MSG_PREFIX) -> message.withToolResultNotice(
+                wireSystemNotice(listOf(wireTimeLine(message.timestamp, zone))),
+            )
+            message.acceptsUserWireNotice() && !isLeadingSystemNotice(message.text) -> {
+                val lines = buildList {
+                    add(wireTimeLine(message.timestamp, zone))
+                    if (message.id == latestUserNoticeId) add(wireWorkModeLine(askMode))
+                }
+                message.copy(text = appendWireSystemNotice(message.text, wireSystemNotice(lines)))
+            }
+            else -> message
+        }
+    }
+}
+
+/** Stamp the payload providers and the context estimate actually send. Room text is ignored. */
+private fun ChatMessage.withToolResultNotice(notice: String): ChatMessage {
+    val toolSegments = segments.orEmpty().filter { it.type == "tool" }
+    if (toolSegments.isNotEmpty()) {
+        return copy(
+            segments = segments?.map { segment ->
+                if (segment.type != "tool") segment
+                else segment.copy(toolResult = appendWireSystemNotice(segment.toolResult.orEmpty(), notice))
+            },
+        )
+    }
+    val call = toolCall
+    if (call != null) {
+        return copy(toolCall = call.copy(result = appendWireSystemNotice(call.result, notice)))
+    }
+    return copy(text = appendWireSystemNotice(text, notice))
+}
+
+private fun ChatMessage.acceptsUserWireNotice(): Boolean =
+    participant == Participant.USER &&
+        !isToolProtocolMessage() &&
+        !isContextCompact() &&
+        !isContextProjectionMessageId(id)
+
+private fun ChatMessage.isToolProtocolMessage(): Boolean =
+    id.startsWith(Constants.TOOL_MSG_PREFIX) || id.startsWith(Constants.RESULT_MSG_PREFIX)
+
 internal fun projectGenerationInputMessages(
     messages: List<ChatMessage>,
     includeImages: Boolean,
     userPrepend: String?,
     userPostpend: String?,
     initialUserPrompt: String? = null,
+    askMode: Boolean = false,
+    zone: ZoneId = ZoneId.systemDefault(),
 ): List<ChatMessage> {
-    val projected = applyUserTemplateToMessages(
+    val templated = applyUserTemplateToMessages(
         messages = projectToolResultImagesToUserMessage(
             messages = projectAssistantImagesToLatestUserMessage(messages, includeImages),
             includeImages = includeImages,
@@ -199,6 +324,7 @@ internal fun projectGenerationInputMessages(
         prepend = userPrepend,
         postpend = userPostpend,
     )
+    val projected = appendWireSystemNotices(templated, askMode, zone)
     val prompt = initialUserPrompt?.takeIf(String::isNotBlank) ?: return projected
     val parent = projected.lastOrNull()
     return projected + ChatMessage(

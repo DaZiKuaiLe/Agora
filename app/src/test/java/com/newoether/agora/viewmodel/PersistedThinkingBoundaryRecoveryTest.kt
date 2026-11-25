@@ -19,7 +19,7 @@ class PersistedThinkingBoundaryRecoveryTest {
             ),
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolArgs = "{}",
                 toolResult = "result",
             ),

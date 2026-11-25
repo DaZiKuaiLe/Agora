@@ -33,10 +33,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.Shape
 import com.newoether.agora.R
+import com.newoether.agora.util.PathReferenceTokens
 import com.newoether.agora.util.noOpBringIntoView
 import com.newoether.agora.model.ChatMessage
 import com.newoether.agora.ui.chat.AttachmentThumbnailItem
 import com.newoether.agora.ui.chat.ThumbnailClickHandlers
+import com.newoether.agora.ui.chat.bottombar.PathReferenceInputTransformation
+import com.newoether.agora.ui.chat.bottombar.rememberPathReferenceOutputTransformation
 import com.newoether.agora.ui.chat.findMetaForIndex
 import com.newoether.agora.ui.chat.resolveAttachmentType
 import com.newoether.agora.ui.common.LocalAgoraHaptics
@@ -104,11 +107,10 @@ internal fun UserMessageBubble(
                         showMenu = true
                     },
                 )
-                // Keep size interpolation local to the stable user-bubble surface. Initial
-                // measurement is immediate; subsequent editor enter/exit changes animate
-                // without involving the message row or assistant streaming layout.
+                // Animate editor enter/exit only. Historical bubbles must not interpolate size
+                // while the conversation list is composing them during a fling.
                 .then(
-                    if (allowSpatialTransitions) {
+                    if (allowSpatialTransitions && isEditing) {
                         Modifier.animateContentSize(
                             animationSpec = tween(durationMillis = 500),
                         )
@@ -120,6 +122,12 @@ internal fun UserMessageBubble(
             if (isEditing) {
                 val editState = rememberTextFieldState(message.text)
                 val editScrollState = rememberScrollState()
+                val pathRefBackground = MaterialTheme.colorScheme.secondaryContainer
+                val pathRefForeground = MaterialTheme.colorScheme.onSecondaryContainer
+                val pathRefOutput = rememberPathReferenceOutputTransformation(
+                    background = pathRefBackground,
+                    foreground = pathRefForeground,
+                )
                 Column(modifier = Modifier.padding(8.dp)) {
                     Box(modifier = Modifier.noOpBringIntoView()) {
                         TextField(
@@ -131,7 +139,9 @@ internal fun UserMessageBubble(
                             colors = TextFieldDefaults.colors(
                                 focusedContainerColor = Color.Transparent,
                                 unfocusedContainerColor = Color.Transparent
-                            )
+                            ),
+                            inputTransformation = PathReferenceInputTransformation,
+                            outputTransformation = pathRefOutput,
                         )
                     }
                     Row(
@@ -254,6 +264,10 @@ internal fun UserMessageBubble(
                             style = ChatType.userBody,
                             color = textColor,
                             spec = searchHighlight,
+                            pathReferenceStyle = PathReferenceCapsuleStyle(
+                                background = MaterialTheme.colorScheme.secondaryContainer,
+                                foreground = MaterialTheme.colorScheme.onSecondaryContainer,
+                            ),
                         )
                     }
                 }
@@ -271,7 +285,9 @@ internal fun UserMessageBubble(
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.copy)) },
                         onClick = {
-                            clipboardManager.setText(AnnotatedString(actionCopyText))
+                            clipboardManager.setText(
+                                AnnotatedString(PathReferenceTokens.expandForSend(actionCopyText)),
+                            )
                             haptics.confirm()
                             showMenu = false
                         },

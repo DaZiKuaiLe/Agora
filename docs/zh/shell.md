@@ -1,13 +1,15 @@
 # 远程 Shell
 
-打开**设置 → Shell 设备**配置供代理工具使用的 Conch 或 SSH 设备。
+打开**设置 → Shell 设备**配置供代理工具使用的 SSH 设备。Conch 已废弃，不再作为在线后端；旧备份里残留的 Conch 字段会被忽略。
 
-## Conch
+## SSH
 
-配置服务器 URL、可选 API Key 和命令确认策略。有 API Key 时，Agora 获取服务器签名公钥，派生临时共享密钥，并发送经过认证的 AES-GCM 请求。空 Key 时应用层载荷是明文 JSON，机密性只依赖 HTTPS。
+可配置主机、端口、用户和主机密钥验证/固定。认证方式为登录密码或私钥（OpenSSH、PEM 或 PuTTY）二选一；加密私钥可另填可选口令。导入私钥使用应用内文件浏览器，需要全部文件访问权限，并会列出 `.ssh` 等隐藏文件夹。直接 SSH 不受共享 HTTP 代理控制。
 
-前台命令会创建持久任务并等待有限时间。等待超时不会杀死或重放命令，而是返回 `job_id`；之后可查询、等待、停止和确认删除。Conch 还支持远程读取、写入、编辑、glob、grep 与图像查看。
+远程文件的读、改、走 SFTP（`read_remote_file`、`str_replace_remote`、`write_remote_file`）。列一层目录用一次 SFTP `ls`（`list_remote_files`）。按名/按内容的递归搜索（`glob_remote_files`、`grep_remote`）在主机上跑 `find`/`grep` 或 PowerShell，没有这些能力就失败，不会把目录树下载到手机。短命令用 `execute_remote_command`。预计五秒以上、或要一边跑一边说话/开下一件时，用 `start_remote_process` 以及 get/wait/stop。短命令超时会被结束，不会升成进程。
 
-## SSH 与确认
+## 确认
 
-SSH 可配置主机、端口、用户、认证和主机密钥验证/固定。直接 SSH 不受共享 HTTP 代理控制。命令可要求确认，或按服务器设为始终允许；远程账户权限决定模型可执行的操作。
+命令、写入、替换和传输可要求确认，或按服务器设为始终允许。将 SSH 视为高信任能力：远程账户权限决定模型能改什么。
+
+参见 [代理工具](tools.md)、[网络代理](proxy.md) 与 [隐私与安全](privacy.md)。

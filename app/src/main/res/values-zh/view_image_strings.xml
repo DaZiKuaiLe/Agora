@@ -5,4 +5,11 @@
     <string name="tool_progress_viewing">正在查看…</string>
     <string name="tool_viewed_image">已查看图片 %1$s</string>
     <string name="tool_viewed_image_default">已查看图片</string>
+    <string name="tool_upload_file">上传文件</string>
+    <string name="tool_download_file">下载文件</string>
+    <string name="tool_open_file">打开文件</string>
+    <string name="tool_opening_file">正在打开 %1$s…</string>
+    <string name="tool_progress_opening">正在打开…</string>
+    <string name="tool_opened_file">已打开 %1$s</string>
+    <string name="tool_opened_file_default">已打开文件</string>
 </resources>

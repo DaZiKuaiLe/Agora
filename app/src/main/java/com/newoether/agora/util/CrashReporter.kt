@@ -6,6 +6,7 @@ import com.newoether.agora.api.HttpClient
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.io.PrintWriter
 import java.io.StringWriter
 import java.util.concurrent.ConcurrentLinkedDeque
@@ -13,10 +14,12 @@ import java.util.concurrent.ConcurrentLinkedDeque
 /**
  * Anonymous, opt-in crash reporting.
  *
- * On an uncaught exception we persist a single pending report to disk and then let the
- * platform's default handler terminate the process normally. On the next launch the UI
- * detects the pending report and offers the user a one-tap, opt-in submission to
- * [ENDPOINT]; nothing is ever sent without that explicit action.
+ * On an uncaught [Throwable] (including [Error]) we persist the report to disk, fsync it,
+ * and then let the platform's default handler terminate the process. The newest report is
+ * also copied to [FILE] so the next launch can offer a one-tap, opt-in submission to
+ * [ENDPOINT]. Dismissing or submitting that dialog removes only [FILE]. Every report stays
+ * in the archive directory until the archive cap drops the oldest. Nothing is ever sent
+ * without an explicit action.
  *
  * The report carries only a stack trace plus coarse, non-identifying environment data
  * (app version, Android API level, device model) — no user content, no device IDs.
@@ -27,6 +30,8 @@ object CrashReporter {
     private const val ENDPOINT = "https://newoether.space/crash"
     private const val DIR = "crash"
     private const val FILE = "pending.json"
+    private const val ARCHIVE_DIR = "archive"
+    private const val MAX_ARCHIVED_REPORTS = 40
     private const val MAX_TRACE_CHARS = 60_000
 
     /** Coarse, non-identifying app identity captured once at install time. */
@@ -57,6 +62,7 @@ object CrashReporter {
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             runCatching { writeReport(appContext, throwable) }
             // Always chain to the platform handler so the process dies as it normally would.
+            // The pending file is fsynced first so a hard kill still leaves a next-launch dialog.
             previous?.uncaughtException(thread, throwable)
         }
     }
@@ -68,7 +74,7 @@ object CrashReporter {
         return runCatching { f.readText() }.getOrNull()
     }
 
-    /** Discards the pending report (after the user submits or dismisses it). */
+    /** Drops the next-launch dialog copy. Archived reports stay on disk. */
     fun clear(context: Context) {
         runCatching { reportFile(context).delete() }
     }
@@ -81,9 +87,14 @@ object CrashReporter {
         runCatching { HttpClient.post(ENDPOINT, reportJson) != null }.getOrDefault(false)
 
     private fun writeReport(context: Context, throwable: Throwable) {
+        persistCrashReport(File(context.filesDir, DIR), crashReportJson(throwable))
+    }
+
+    private fun crashReportJson(throwable: Throwable): String {
         val trace = StringWriter().also { throwable.printStackTrace(PrintWriter(it)) }
             .toString().take(MAX_TRACE_CHARS)
-        val json = JSONObject().apply {
+        return JSONObject().apply {
+            put("type", throwable.javaClass.name)
             put("trace", trace)
             put("appVersion", appInfo.versionName)
             put("versionCode", appInfo.versionCode)
@@ -92,9 +103,52 @@ object CrashReporter {
             put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
             put("ts", System.currentTimeMillis())
             put("breadcrumbs", JSONArray(breadcrumbs.toList()))
+        }.toString()
+    }
+
+    internal fun persistCrashReport(dir: File, json: String) {
+        dir.mkdirs()
+        writeSynced(dir, FILE, json)
+        val archive = File(dir, ARCHIVE_DIR)
+        archive.mkdirs()
+        val stamp = System.currentTimeMillis()
+        var name = "crash-$stamp.json"
+        var sequence = 0
+        while (File(archive, name).exists()) {
+            sequence++
+            name = "crash-$stamp-$sequence.json"
         }
-        val dir = File(context.filesDir, DIR).apply { mkdirs() }
-        File(dir, FILE).writeText(json.toString())
+        writeSynced(archive, name, json)
+        trimArchive(archive)
+    }
+
+    private fun trimArchive(archive: File) {
+        val reports = archive.listFiles { file ->
+            file.isFile && file.name.startsWith("crash-") && file.name.endsWith(".json")
+        } ?: return
+        if (reports.size <= MAX_ARCHIVED_REPORTS) return
+        reports.sortedBy { it.name }.dropLast(MAX_ARCHIVED_REPORTS).forEach { it.delete() }
+    }
+
+    private fun writeSynced(dir: File, fileName: String, json: String) {
+        val target = File(dir, fileName)
+        val tmp = File(dir, "$fileName.tmp")
+        FileOutputStream(tmp).use { out ->
+            out.write(json.toByteArray(Charsets.UTF_8))
+            out.flush()
+            out.fd.sync()
+        }
+        if (target.exists() && !target.delete()) {
+            tmp.copyTo(target, overwrite = true)
+            tmp.delete()
+            FileOutputStream(target, true).use { it.fd.sync() }
+            return
+        }
+        if (!tmp.renameTo(target)) {
+            tmp.copyTo(target, overwrite = true)
+            tmp.delete()
+            FileOutputStream(target, true).use { it.fd.sync() }
+        }
     }
 
     private fun reportFile(context: Context): File = File(File(context.filesDir, DIR), FILE)

@@ -18,7 +18,6 @@ internal class SemanticSearchService(
     suspend fun search(query: String, limit: Int): List<Pair<MessageEntity, Float>> {
         val context = GenerationContext(
             accessSavedMemories = settings.accessSavedMemories.value,
-            accessActiveMemory = settings.accessActiveMemory.value,
             skillReadAccess = false,
             skillModifyAccess = false,
             accessPastConversations = settings.accessPastConversations.value,

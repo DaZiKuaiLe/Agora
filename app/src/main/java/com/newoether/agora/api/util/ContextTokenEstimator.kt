@@ -30,6 +30,18 @@ object ContextTokenEstimator {
         return applySafetyMargin(raw)
     }
 
+    /** Same as [estimate] for a single message (send-path framing, not export body text). */
+    fun estimateMessage(message: ChatMessage): Int = estimate(listOf(message))
+
+    /**
+     * SYSTEM block only: message overhead + prompt text.
+     * Tool schemas stay in fixed cost, not in this figure.
+     */
+    fun estimateSystemPrompt(systemPrompt: String?): Int {
+        val raw = MESSAGE_OVERHEAD.toLong() + estimateTextRaw(systemPrompt.orEmpty())
+        return applySafetyMargin(raw.coerceAtMost(Int.MAX_VALUE.toLong()))
+    }
+
     /** Provider-visible cost that exists even when the conversation history is empty. */
     fun estimateFixed(
         systemPrompt: String?,

@@ -4,6 +4,8 @@ object Constants {
     const val TOOL_MSG_PREFIX = "tool_"
     const val RESULT_MSG_PREFIX = "result_"
     const val COMPACT_MSG_PREFIX = "compact_"
+    /** USER row that carries a background-process exit notice. API history stays USER. */
+    const val PROCESS_NOTICE_MSG_PREFIX = "bgproc_"
     const val TOOL_CALL_ID_PREFIX = "call_"
 
     /** Max characters per embedded text chunk */

@@ -106,6 +106,15 @@ The queue claim/check and loop admission must remain linearized so guidance is n
 nor lost. A non-successful or anomalous Compact is a hard automatic-handoff boundary: it starts
 neither queued generation nor loop generation.
 
+Working-context Compact (one summary, retain window, `compactFormatRev`, send intercepts) is specified in
+[`../development-docs/context-compact-summary.md`](../development-docs/context-compact-summary.md).
+Portable mechanism for another client:
+[`../development-docs/context-compact-mechanism.md`](../development-docs/context-compact-mechanism.md).
+Context detail panel (audit UI):
+[`../development-docs/context-detail-panel.md`](../development-docs/context-detail-panel.md).
+This document still owns generation/Run identity and the parent-chain context walk; it does
+not own when full optimize is required.
+
 ## 6. Review blockers
 
 A change is invalid if it:

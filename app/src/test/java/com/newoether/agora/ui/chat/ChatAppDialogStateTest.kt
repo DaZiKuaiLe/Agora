@@ -38,4 +38,14 @@ class ChatAppDialogStateTest {
         assertFalse(visible.value)
         assertFalse(state.manualCompactVisible)
     }
+
+    @Test
+    fun `full optimize visibility is independent of manual compact`() {
+        val state = ChatAppDialogState(mutableStateOf(false))
+        state.showFullOptimize()
+        assertTrue(state.fullOptimizeVisible)
+        assertFalse(state.manualCompactVisible)
+        state.dismissFullOptimize()
+        assertFalse(state.fullOptimizeVisible)
+    }
 }

@@ -5,6 +5,7 @@ import com.newoether.agora.data.ShellDeviceConfig
 import com.newoether.agora.sandbox.SandboxManager
 import com.newoether.agora.util.ShellClient
 import com.newoether.agora.util.SshClient
+import com.newoether.agora.util.SshSessionPool
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -61,10 +62,10 @@ internal class ConchBackend(override val device: ShellDeviceConfig) : Backend {
         timeoutMs: Int,
         onOutput: suspend (String) -> Unit,
     ): String {
-        if (url.isBlank()) return jsonError("execute_shell_command", "Server \"$deviceName\" has no URL configured.")
+        if (url.isBlank()) return jsonError("execute_remote_command", "Server \"$deviceName\" has no URL configured.")
         if (!client.fetchPublicKey() && apiKey.isNotBlank()) {
             return jsonError(
-                "execute_shell_command",
+                "execute_remote_command",
                 client.lastError ?: "Conch public-key exchange failed for $url",
                 server = deviceName,
             )
@@ -78,7 +79,7 @@ internal class ConchBackend(override val device: ShellDeviceConfig) : Backend {
             )
         } catch (e: Exception) {
             return jsonError(
-                "execute_shell_command",
+                "execute_remote_command",
                 com.newoether.agora.util.describeConchRequestFailure(
                     prepared.serverUrl,
                     "/execute request",
@@ -95,7 +96,7 @@ internal class ConchBackend(override val device: ShellDeviceConfig) : Backend {
                 ?: "empty response"
             handle.close()
             return jsonError(
-                "execute_shell_command",
+                "execute_remote_command",
                 "Conch at ${prepared.serverUrl} returned HTTP ${handle.code}: $detail",
                 server = deviceName,
                 command = cmd,
@@ -109,7 +110,7 @@ internal class ConchBackend(override val device: ShellDeviceConfig) : Backend {
                 onOutput = onOutput,
             )
             buildJsonObject {
-                put("type", "execute_shell_command"); put("server", deviceName); put("command", cmd)
+                put("type", "execute_remote_command"); put("server", deviceName); put("command", cmd)
                 if (result.errorMessage != null) {
                     put("error", "execution_error")
                     put("message", result.errorMessage)
@@ -121,7 +122,7 @@ internal class ConchBackend(override val device: ShellDeviceConfig) : Backend {
                 put("output", result.output)
             }.toString()
         } catch (e: Exception) {
-            jsonError("execute_shell_command", e.message ?: "Unknown error", server = deviceName, command = cmd)
+            jsonError("execute_remote_command", e.message ?: "Unknown error", server = deviceName, command = cmd)
         } finally { handle.close() }
     }
 
@@ -160,40 +161,38 @@ internal class ConchBackend(override val device: ShellDeviceConfig) : Backend {
         client.fileImage(path)
 }
 
-internal class SshBackend(override val device: ShellDeviceConfig) : Backend {
+internal class SshBackend(
+    override val device: ShellDeviceConfig,
+    private val sessions: SshSessionPool = SshSessionPool.shared,
+) : Backend {
     private val host = device.sshHost
-    private val port = device.sshPort
-    private val user = device.sshUser
-    private val password = device.sshPassword
     private val deviceName = device.name
-    private val hostKey = device.sshHostKey
+    private var leased: SshClient? = null
 
-    private val client: SshClient by lazy {
-        SshClient(
-            host, port, user, password,
-            pinnedHostKey = hostKey,
-            // Un-pinned devices stay usable (capture-only); once a key is pinned it is enforced.
-            allowUnknownHostKey = hostKey.isBlank()
-        )
-    }
+    var persistDetectedShell: ((deviceId: String, detected: String) -> Unit)? = null
+
+    private fun client(): SshClient =
+        leased ?: sessions.acquire(device, persistDetectedShell).also { leased = it }
+
+    suspend fun ensureSession(): Long = client().ensureSession()
 
     override suspend fun executeCommand(cmd: String, workdir: String, timeoutMs: Int): String {
-        if (host.isBlank()) return jsonError("execute_shell_command", "SSH device \"$deviceName\" has no host configured.")
+        if (host.isBlank()) return jsonError("execute_remote_command", "SSH device \"$deviceName\" has no host configured.")
         return try {
-            val result = client.executeCommand(cmd, workdir, timeoutMs)
+            val result = client().executeCommand(cmd, workdir, timeoutMs)
             buildJsonObject {
-                put("type", "execute_shell_command"); put("server", deviceName); put("command", cmd)
+                put("type", "execute_remote_command"); put("server", deviceName); put("command", cmd)
                 put("exit_code", result.exitCode)
                 put("output", (result.stdout + if (result.stderr.isNotBlank()) "\n${result.stderr}" else "").trimEnd())
             }.toString()
         } catch (e: Exception) {
-            jsonError("execute_shell_command", e.message ?: "Unknown error", server = deviceName, command = cmd)
+            jsonError("execute_remote_command", e.message ?: "Unknown error", server = deviceName, command = cmd)
         }
     }
 
     override suspend fun fileRead(path: String, offset: Long, limit: Long): String {
         return try {
-            val content = client.fileRead(path, offset, limit)
+            val content = client().fileRead(path, offset, limit)
             buildJsonObject {
                 put("type", "file_read"); put("server", deviceName); put("path", path)
                 put("content", content); put("lines", content.lines().size)
@@ -204,10 +203,10 @@ internal class SshBackend(override val device: ShellDeviceConfig) : Backend {
     }
 
     override suspend fun fileWrite(path: String, content: String): String? =
-        client.fileWrite(path, content)?.let { jsonError("file_write", it, server = deviceName) }
+        client().fileWrite(path, content)?.let { jsonError("file_write", it, server = deviceName) }
 
     suspend fun uploadFile(localPath: String, remotePath: String): String? =
-        client.uploadFile(localPath, remotePath)?.let { jsonError("upload_file_to_server", it, server = deviceName) }
+        client().uploadFile(localPath, remotePath)?.let { jsonError("upload_file_to_server", it, server = deviceName) }
 
     /**
      * SFTP download. [SshClient.downloadFile] returns the absolute local path on success or an
@@ -215,17 +214,21 @@ internal class SshBackend(override val device: ShellDeviceConfig) : Backend {
      * corrupt the returned path and the caller would never find the downloaded file.
      */
     suspend fun downloadFile(remotePath: String, localDir: String): String? =
-        client.downloadFile(remotePath, localDir)
+        client().downloadFile(remotePath, localDir)
 
     override suspend fun fileGlob(pattern: String, basePath: String, depth: Int?): Result<List<String>> =
-        Result.success(client.fileGlob(pattern, basePath, depth))
+        Result.success(client().fileGlob(pattern, basePath, depth))
 
     override suspend fun fileGrep(pattern: String, basePath: String, fileGlob: String): Result<List<ShellClient.GrepMatch>> =
-        client.fileGrep(pattern, basePath, fileGlob).map { matches ->
+        client().fileGrep(pattern, basePath, fileGlob).map { matches ->
             matches.map { ShellClient.GrepMatch(it.path, it.line, it.content) }
         }
 
-    override fun close() { client.close() }
+    override fun close() {
+        val client = leased ?: return
+        leased = null
+        sessions.release(device, client, discard = !client.isConnected())
+    }
 }
 
 internal class SandboxBackend(sandbox: SandboxManager?) : Backend {
@@ -233,16 +236,16 @@ internal class SandboxBackend(sandbox: SandboxManager?) : Backend {
     private val mgr = sandbox ?: throw IllegalStateException("Sandbox not available")
 
     override suspend fun executeCommand(cmd: String, workdir: String, timeoutMs: Int): String {
-        if (!mgr.isAvailable()) return jsonError("execute_shell_command", "Local Sandbox is not installed.")
+        if (!mgr.isAvailable()) return jsonError("execute_local_command", "Local Sandbox is not installed.")
         return try {
             val result = mgr.executeCommand(cmd, workdir, timeoutMs)
             buildJsonObject {
-                put("type", "execute_shell_command"); put("server", "Local Sandbox"); put("command", cmd)
+                put("type", "execute_local_command"); put("server", "Local Sandbox"); put("command", cmd)
                 put("exit_code", result.exitCode)
                 put("output", (result.stdout + if (result.stderr.isNotBlank()) "\n${result.stderr}" else "").trimEnd())
             }.toString()
         } catch (e: Exception) {
-            jsonError("execute_shell_command", e.message ?: "Unknown error", server = "Local Sandbox", command = cmd)
+            jsonError("execute_local_command", e.message ?: "Unknown error", server = "Local Sandbox", command = cmd)
         }
     }
 

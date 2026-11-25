@@ -8,6 +8,8 @@ import com.newoether.agora.data.MemoryManager
 import com.newoether.agora.data.SkillManager
 import com.newoether.agora.data.PredefinedVariables
 import com.newoether.agora.data.SystemPromptEntry
+import com.newoether.agora.data.applyActiveMemoryToSystemPrompt
+import com.newoether.agora.data.applyAgoraSystemPrefix
 import com.newoether.agora.data.providerDisplayName
 import com.newoether.agora.data.isResponsesApiEnabledForProvider
 import com.newoether.agora.data.local.ChatEntity
@@ -121,6 +123,7 @@ class GenerationRequestBuilder(
             openAiWebSearchEnabled = overrides.openAiWebSearchEnabled ?: true,
             webSearchEnabled = if (settings.webSearchEnabled.value) (overrides.webSearchEnabled ?: true) else false,
             shellEnabled = if (settings.shellEnabled.value) (overrides.shellEnabled ?: true) else false,
+            askMode = overrides.askModeEnabled ?: true,
             thinkingEnabled = modelGen.thinkingEnabled,
             thinkingLevel = modelGen.thinkingLevel.ifBlank { defaultThinkingLevel },
             thinkingBudgetEnabled = modelGen.thinkingBudgetEnabled,
@@ -179,6 +182,7 @@ class GenerationRequestBuilder(
         } else {
             settings.resolveActiveKey(compactProviderName).orEmpty()
         }
+        val compactEffective = buildEffectiveConversationSettings(conversationId, compactModel)
         val (compactGenerationConfig, compactGenerationContext) = buildGenerationPair(
             providerName = compactProviderName,
             modelId = compactModel,
@@ -186,12 +190,13 @@ class GenerationRequestBuilder(
             resolvedSystemPrompt = settings.contextCompactPrompt.value,
             resolvedUserPrepend = null,
             resolvedUserPostpend = null,
-            effectiveSettings = effectiveSettings,
+            effectiveSettings = compactEffective,
             currentId = conversationId,
         )
         val automaticCompact = AutomaticCompactConfig(
             enabled = settings.contextCompactEnabled.value,
             compactThreshold = compactThreshold,
+            freezeThreshold = settings.contextCompactFreezeThreshold.value,
             request = CompactRequest(
                 model = compactModel,
                 prompt = settings.contextCompactPrompt.value,
@@ -221,6 +226,7 @@ class GenerationRequestBuilder(
             activeModel = selectedModelId,
             conversationOverride = conversationOverride,
             promptSettings = promptSettings,
+            askMode = effectiveSettings.askMode,
         )
         return GenerationAdmissionSnapshot(
             conversationId = conversationId,
@@ -255,6 +261,7 @@ class GenerationRequestBuilder(
     ): GenerationContextProjectionSnapshot {
         val selectedModelId = providerRegistry.canonicalModelId(modelId)
         val providerName = providerRegistry.providerForModel(selectedModelId)
+        val effectiveSettings = buildEffectiveConversationSettings(conversationId, selectedModelId)
         val (baseConfig, context) = buildGenerationPair(
             providerName = providerName,
             modelId = selectedModelId,
@@ -262,7 +269,7 @@ class GenerationRequestBuilder(
             resolvedSystemPrompt = null,
             resolvedUserPrepend = null,
             resolvedUserPostpend = null,
-            effectiveSettings = buildEffectiveConversationSettings(conversationId, selectedModelId),
+            effectiveSettings = effectiveSettings,
             currentId = conversationId,
         )
         val resolved = buildEffectiveSystemPrompt(
@@ -271,6 +278,7 @@ class GenerationRequestBuilder(
             conversationOverride = null,
             promptSettings = capturePromptSettings(),
             systemPromptIdOverride = systemPromptIdOverride,
+            askMode = effectiveSettings.askMode,
         )
         return GenerationContextProjectionSnapshot(
             config = baseConfig.copy(
@@ -315,7 +323,7 @@ class GenerationRequestBuilder(
             apiKey = activeKey,
             effectiveSystemPrompt = effectiveSystemPromptWithSkills,
             maxContextWindow = effectiveSettings.maxContextWindow,
-            codeExecutionEnabled = effectiveSettings.codeExecutionEnabled,
+            codeExecutionEnabled = effectiveSettings.codeExecutionEnabled && !effectiveSettings.askMode,
             googleSearchEnabled = effectiveSettings.googleSearchEnabled,
             thinkingEnabled = effectiveSettings.thinkingEnabled,
             thinkingLevel = effectiveSettings.thinkingLevel,
@@ -336,14 +344,15 @@ class GenerationRequestBuilder(
             maxTokens = effectiveSettings.maxTokens,
             topP = effectiveSettings.topP,
             frequencyPenalty = effectiveSettings.frequencyPenalty,
-            presencePenalty = effectiveSettings.presencePenalty
+            presencePenalty = effectiveSettings.presencePenalty,
+            contextRetainTurns = settings.contextCompactRetainCount.value,
         )
         val genCtx = GenerationContext(
             conversationId = currentId,
             accessSavedMemories = settings.accessSavedMemories.value,
-            accessActiveMemory = settings.accessActiveMemory.value,
+            accessActiveMemory = true,
             skillReadAccess = skillReadAccess,
-            skillModifyAccess = skillModifyAccess,
+            skillModifyAccess = skillModifyAccess && !effectiveSettings.askMode,
             skillCatalog = skillCatalog,
             accessPastConversations = settings.accessPastConversations.value,
             modelSearchMethod = settings.modelSearchMethod.value,
@@ -356,16 +365,19 @@ class GenerationRequestBuilder(
             webSearchApiKeys = settings.webSearchApiKeys.value,
             webSearchProvider = settings.webSearchProvider.value,
             webSearchBaseUrl = settings.webSearchBaseUrl.value,
-            imageGenEnabled = settings.imageGenEnabled.value && imageGenModel?.contains(":") == true,
+            imageGenEnabled = settings.imageGenEnabled.value && imageGenModel?.contains(":") == true &&
+                !effectiveSettings.askMode,
             imageGenApiKey = resolveImageGenApiKey(imageGenModel),
             imageGenBaseUrl = resolveImageGenBaseUrl(imageGenModel),
             imageGenModel = resolveImageGenModelId(imageGenModel),
             imageGenSize = settings.imageGenSize.value,
-            automationToolsEnabled = settings.automationToolsEnabled.value,
+            automationToolsEnabled = settings.automationToolsEnabled.value && !effectiveSettings.askMode,
             shellEnabled = effectiveSettings.shellEnabled,
             shellDevices = settings.shellDevices.value,
             sandboxEnabled = settings.sandboxEnabled.value,
             sandboxSharedStorageEnabled = settings.sandboxSharedStorageEnabled.value,
+            localCommandEnabled = settings.localCommandEnabled.value,
+            askMode = effectiveSettings.askMode,
             // Keyed on THIS generation's model, not the UI's currently-selected one — a queued
             // or parallel-conversation generation must not inherit another conversation's model.
             imageTranscriptionEnabled =
@@ -383,13 +395,11 @@ class GenerationRequestBuilder(
     }
 
     private data class PromptSettingsSnapshot(
-        val includeActiveMemory: Boolean,
         val activeSystemPromptId: String?,
         val systemPrompts: List<SystemPromptEntry>,
     )
 
     private fun capturePromptSettings() = PromptSettingsSnapshot(
-        includeActiveMemory = settings.accessActiveMemory.value,
         activeSystemPromptId = settings.activeSystemPromptId.value,
         systemPrompts = settings.systemPrompts.value.toList(),
     )
@@ -406,16 +416,15 @@ class GenerationRequestBuilder(
         conversationOverride: ChatEntity?,
         promptSettings: PromptSettingsSnapshot,
         systemPromptIdOverride: String? = null,
+        askMode: Boolean = false,
     ): ResolvedPrompt = withContext(Dispatchers.Default) {
         coroutineScope {
-            val includeActiveMemory = promptSettings.includeActiveMemory
-            // Room and the optional memory-file read are independent. Running both immediately avoids
-            // adding their latencies serially to the visible Sending phase.
             val conversationDeferred = async {
                 conversationOverride ?: convRepo.getConversation(currentId)
             }
             val activeMemoryDeferred = async(Dispatchers.IO) {
-                if (includeActiveMemory) memoryManager.getActiveMemory() else ""
+                memoryManager.ensureRevisionForExistingContent()
+                memoryManager.getActiveMemory()
             }
             val conversation = conversationDeferred.await()
             val targetPromptId = systemPromptIdOverride
@@ -435,21 +444,32 @@ class GenerationRequestBuilder(
                 PredefinedVariables.SENT_TIME to sdf.format(now),
                 PredefinedVariables.SENT_DATE to dateSdf.format(now),
                 PredefinedVariables.MODEL_ID to modelId,
-                PredefinedVariables.ACTIVE_MEMORY to if (includeActiveMemory && activeMemory.isNotBlank()) activeMemory else ""
+                PredefinedVariables.ACTIVE_MEMORY to activeMemory.trim(),
             )
 
             if (entry != null) {
                 val systemItems = entry.resolvedSystemItems
                 // Prepend/postpend: {sent_time}/{sent_date} stay as placeholders resolved per-message in applyUserTemplate
                 val perMsgValues = runtimeValues.filterKeys { it !in PredefinedVariables.PER_MESSAGE_VARS }
+                val compiled = PredefinedVariables.compile(systemItems, runtimeValues)
                 return@coroutineScope ResolvedPrompt(
-                    systemPrompt = PredefinedVariables.compile(systemItems, runtimeValues).ifBlank { null },
+                    systemPrompt = applyActiveMemoryToSystemPrompt(
+                        applyAgoraSystemPrefix(compiled, askMode),
+                        activeMemory,
+                    ),
                     userPrepend = PredefinedVariables.compile(entry.userPrependItems, perMsgValues, emptyMap()).ifBlank { null },
                     userPostpend = PredefinedVariables.compile(entry.userPostpendItems, perMsgValues, emptyMap()).ifBlank { null }
                 )
             }
 
-            ResolvedPrompt(null, null, null)
+            ResolvedPrompt(
+                systemPrompt = applyActiveMemoryToSystemPrompt(
+                    applyAgoraSystemPrefix(null, askMode),
+                    activeMemory,
+                ),
+                userPrepend = null,
+                userPostpend = null,
+            )
         }
     }
 }

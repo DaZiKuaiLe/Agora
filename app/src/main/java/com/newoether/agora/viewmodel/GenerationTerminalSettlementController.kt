@@ -82,8 +82,7 @@ internal class GenerationTerminalSettlementController(
         val errorText = failureText()
         val failedMessage = modelMessageId?.let { id ->
             runCatching {
-                conversations.getMessagesForConversationSnapshot(conversationId)
-                    .firstOrNull { it.id == id }
+                conversations.getMessage(id)
                     ?.let(toUiMessage)
                     ?.copy(text = errorText, status = MessageStatus.ERROR)
             }.getOrNull()

@@ -4,9 +4,11 @@ import com.newoether.agora.data.local.MessageEntity
 import com.newoether.agora.model.AttachmentMeta
 import com.newoether.agora.model.ChatMessage
 import com.newoether.agora.model.MessageSegment
+import com.newoether.agora.model.Participant
 import com.newoether.agora.model.TokenUsage
 import com.newoether.agora.model.ToolCallData
 import com.newoether.agora.util.Constants
+import com.newoether.agora.util.PathReferenceTokens
 import kotlinx.serialization.json.Json
 
 /**
@@ -70,6 +72,14 @@ internal fun projectProviderMessages(
                 else -> null
             }
         }?.joinToString("").orEmpty()
+        // Persist UI history may keep path-reference tokens; expand only for the model /
+        // tool-calling path so shell args and tool panels see concrete filesystem paths.
+        val bodyText = recovered.text + attachmentText
+        val providerText = if (entity.participant == Participant.USER) {
+            PathReferenceTokens.expandForSend(bodyText)
+        } else {
+            bodyText
+        }
         val hasTranscription = includeStoredTranscriptions &&
             attachmentMeta?.items?.any { !it.transcription.isNullOrBlank() } == true
         val imageAssetsText = run {
@@ -81,7 +91,7 @@ internal fun projectProviderMessages(
                     ?.let { "image[$index] = $it" }
             }
             if (originalAssets.isNotEmpty()) {
-                "\n\n[本地图片 - 可用 upload_file_to_server 上传到远程服务器后，再用 execute_shell_command 操作]\n" +
+                "\n\n[本地图片 - 可用 upload_file_to_server 上传到远程服务器后，再用 execute_remote_command 操作]\n" +
                     originalAssets.joinToString("\n")
             } else if (entity.images.isNotEmpty()) {
                 // Fallback when no usable originalUri surfaces (content URI / missing meta):
@@ -89,13 +99,13 @@ internal fun projectProviderMessages(
                 val assets = entity.images.withIndex().joinToString("\n") { (index, path) ->
                     "image[$index] = $path"
                 }
-                "\n\n[本地图片 - 可用 upload_file_to_server 上传到远程服务器后，再用 execute_shell_command 操作]\n$assets"
+                "\n\n[本地图片 - 可用 upload_file_to_server 上传到远程服务器后，再用 execute_remote_command 操作]\n$assets"
             } else null
         }
         ChatMessage(
             id = entity.id,
             parentId = entity.parentId,
-            text = recovered.text + attachmentText,
+            text = providerText,
             images = if (hasTranscription) emptyList() else entity.images,
             thoughts = recovered.thoughts,
             thoughtTitle = entity.thoughtTitle,
@@ -120,6 +130,13 @@ internal fun projectProviderMessages(
             runId = entity.runId,
             runSequence = entity.runSequence,
             consumedAtPass = entity.consumedAtPass,
+            turnId = entity.turnId,
+            compactLocked = entity.compactLocked,
+            compactBatchId = entity.compactBatchId,
+            compactSummary = entity.compactSummary,
+            compactDigest = entity.compactDigest,
+            compactDigestRev = entity.compactDigestRev,
+            integrateText = entity.integrateText,
         )
     }
 }

@@ -1,5 +1,6 @@
 package com.newoether.agora.viewmodel
 
+import com.newoether.agora.util.SshAuth
 import com.newoether.agora.util.SshClient
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -13,15 +14,15 @@ internal class HostKeyCaptureSession(
 
 /**
  * Connects in capture mode and returns the server host key with its SHA-256 fingerprint for user
- * review and pinning. The key exchange precedes authentication, so a bad password may still yield
- * a valid key. This verifier owns no saved device state.
+ * review and pinning. The key exchange precedes authentication, so a bad password or key may still
+ * yield a valid key. This verifier owns no saved device state.
  */
 internal class SshHostKeyVerifier(
     private val createSession: (
         host: String,
         port: Int,
         user: String,
-        password: String,
+        auth: SshAuth,
     ) -> HostKeyCaptureSession = ::createHostKeyCaptureSession,
     private val fingerprint: (String) -> String = SshClient::fingerprintSha256,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -30,10 +31,10 @@ internal class SshHostKeyVerifier(
         host: String,
         port: Int,
         user: String,
-        password: String,
+        auth: SshAuth,
     ): Result<Pair<String, String>> = withContext(ioDispatcher) {
         if (host.isBlank()) return@withContext Result.failure(Exception("Host is empty"))
-        val session = createSession(host, port, user.ifBlank { "root" }, password)
+        val session = createSession(host, port, user.ifBlank { "root" }, auth)
         try {
             try {
                 session.probe()
@@ -56,18 +57,18 @@ private fun createHostKeyCaptureSession(
     host: String,
     port: Int,
     user: String,
-    password: String,
+    auth: SshAuth,
 ): HostKeyCaptureSession {
     val client = SshClient(
         host = host,
         port = port,
         user = user,
-        password = password,
+        auth = auth,
         pinnedHostKey = "",
         allowUnknownHostKey = true,
     )
     return HostKeyCaptureSession(
-        probe = { client.executeCommand("true") },
+        probe = { client.executeCommand("echo agora") },
         capturedHostKey = { client.capturedHostKey },
         close = client::close,
     )

@@ -122,4 +122,5 @@ internal fun StreamEvent.carriesModelOutput(): Boolean = when (this) {
     is StreamEvent.UsageUpdate -> false
     is StreamEvent.Retrying -> false
     is StreamEvent.Error -> false
+    is StreamEvent.Completion -> false
 }

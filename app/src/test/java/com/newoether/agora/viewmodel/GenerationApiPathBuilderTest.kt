@@ -1,25 +1,45 @@
-package com.newoether.agora.viewmodel
+﻿package com.newoether.agora.viewmodel
 
 import com.newoether.agora.api.util.convertToOpenAiMessages
 import com.newoether.agora.api.util.prepareMessages
+import com.newoether.agora.data.local.CompactMessageGraphRow
 import com.newoether.agora.data.local.MessageEntity
 import com.newoether.agora.data.repository.ConversationRepository
 import com.newoether.agora.model.MessageStatus
 import com.newoether.agora.model.Participant
 import com.newoether.agora.util.Constants
 import com.newoether.agora.api.util.ContextTokenEstimator
+import com.newoether.agora.tool.DetailStore
+import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import android.content.Context
+import kotlin.io.path.createTempDirectory
 
 class GenerationApiPathBuilderTest {
+    private fun builder(repository: ConversationRepository): GenerationApiPathBuilder {
+        val context = mockk<Context>(relaxed = true)
+        every { context.getString(any()) } returns "summary"
+        every { context.getString(any(), *anyVararg()) } answers {
+            "summary"
+        }
+        return GenerationApiPathBuilder(
+            conversations = repository,
+            toolDefinitions = { emptyList() },
+            detailStore = DetailStore(createTempDirectory("agora-detail").toFile()),
+            appContext = context,
+        )
+    }
+
     @Test
     fun `caller snapshot produces compact-bounded path and exact provider config`() = runTest {
         val repository = mockk<ConversationRepository>(relaxed = true)
-        val builder = GenerationApiPathBuilder(repository) { emptyList() }
+        val builder = builder(repository)
         val compact = message("${Constants.COMPACT_MSG_PREFIX}boundary", parentId = "old", sequence = 1)
         val user = message("user", parentId = compact.id, sequence = 2, participant = Participant.USER)
         val model = message("model", parentId = user.id, sequence = 3)
@@ -43,13 +63,12 @@ class GenerationApiPathBuilderTest {
                 ContextTokenEstimator.estimateFixed("system", emptyList()),
             path.providerConfig.maxContextWindow,
         )
-        coVerify(exactly = 0) { repository.getMessagesForConversationSnapshot(any()) }
     }
 
     @Test
     fun `nearest normally completed compact on the parent chain is the context boundary`() = runTest {
         val repository = mockk<ConversationRepository>(relaxed = true)
-        val builder = GenerationApiPathBuilder(repository) { emptyList() }
+        val builder = builder(repository)
 
         for (invalidStatus in listOf(
             MessageStatus.ERROR,
@@ -92,7 +111,7 @@ class GenerationApiPathBuilderTest {
     @Test
     fun `stopped run remains an assistant before queued guidance in first openai request`() = runTest {
         val repository = mockk<ConversationRepository>(relaxed = true)
-        val builder = GenerationApiPathBuilder(repository) { emptyList() }
+        val builder = builder(repository)
         val oldUser = message("old-user", null, 0, Participant.USER)
         val stoppedModel = message("stopped-model", oldUser.id, 1)
             .copy(text = "partial answer", status = MessageStatus.STOPPED, runId = "old-run")
@@ -136,7 +155,7 @@ class GenerationApiPathBuilderTest {
     @Test
     fun `failed run sends its concrete raw error once on the same assistant turn`() = runTest {
         val repository = mockk<ConversationRepository>(relaxed = true)
-        val builder = GenerationApiPathBuilder(repository) { emptyList() }
+        val builder = builder(repository)
         val rawError = """Network error (403): {"balance":0.57,"code":"INSUFFICIENT_BALANCE"}"""
         val oldUser = message("old-user", null, 0, Participant.USER)
         val failedModel = message("failed-model", oldUser.id, 1)
@@ -177,7 +196,7 @@ class GenerationApiPathBuilderTest {
     @Test
     fun `failed compact is not a request boundary`() = runTest {
         val repository = mockk<ConversationRepository>(relaxed = true)
-        val builder = GenerationApiPathBuilder(repository) { emptyList() }
+        val builder = builder(repository)
         val old = message("old", null, 0, participant = Participant.USER)
         val failed = message(
             "${Constants.COMPACT_MSG_PREFIX}failed",
@@ -200,6 +219,37 @@ class GenerationApiPathBuilderTest {
         assertTrue(path.messages.any { it.id == old.id })
         assertTrue(path.messages.any { it.id == failed.id && it.text == failed.text })
         assertEquals("user", path.messages.single { it.id == user.id }.text)
+    }
+
+    @Test
+    fun roomPathWalksGraphAndDoesNotHydrateOffPathBodies() = runTest {
+        val old = message("old", null, 0, Participant.USER)
+        val compact = message("${Constants.COMPACT_MSG_PREFIX}boundary", old.id, 1)
+        val user = message("user", compact.id, 2, Participant.USER)
+        val model = message("model", user.id, 3)
+        val otherBranch = message("other", old.id, 4, Participant.USER)
+        val entities = listOf(old, compact, user, model, otherBranch)
+        val repository = mockk<ConversationRepository>()
+        val hydrateCalls = mutableListOf<List<String>>()
+        coEvery { repository.getCompactMessageGraph("conversation") } returns
+            entities.map { it.toGraphRow() }
+        coEvery { repository.getCompactDigest(any()) } returns null
+        coEvery { repository.getMessagesByIds(any()) } answers {
+            val ids = firstArg<List<String>>()
+            hydrateCalls += ids
+            ids.mapNotNull { id -> entities.find { it.id == id } }
+        }
+        val path = builder(repository).build(
+            GenerationApiPathRequest(
+                parentId = model.id,
+                conversationId = "conversation",
+                config = generationConfig(),
+                context = GenerationContext(),
+            ),
+        )
+        assertEquals(listOf(compact.id, user.id, model.id), path.messages.map { it.id })
+        assertTrue(hydrateCalls.flatten().none { it == otherBranch.id })
+        assertTrue(hydrateCalls.flatten().none { it == old.id })
     }
 
     private fun generationConfig() = GenerationConfig(
@@ -229,5 +279,23 @@ class GenerationApiPathBuilderTest {
         modelName = "model-id",
         runId = "run",
         runSequence = sequence,
+    )
+
+    private fun MessageEntity.toGraphRow() = CompactMessageGraphRow(
+        id = id,
+        conversationId = conversationId,
+        parentId = parentId,
+        participant = participant,
+        status = status,
+        timestamp = timestamp,
+        runId = runId,
+        runSequence = runSequence,
+        modelName = modelName,
+        consumedAtPass = consumedAtPass,
+        turnId = turnId,
+        compactLocked = compactLocked,
+        compactBatchId = compactBatchId,
+        compactDigestRev = compactDigestRev,
+        hasCompactDigest = !compactDigest.isNullOrBlank(),
     )
 }

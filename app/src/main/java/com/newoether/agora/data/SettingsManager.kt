@@ -5,6 +5,7 @@ import com.newoether.agora.model.OpenAiServiceTiers
 import com.newoether.agora.model.ContextBudget
 import com.newoether.agora.model.ThinkingSegmentDisplayModes
 import com.newoether.agora.model.ToolCallDisplayModes
+import com.newoether.agora.tool.ProcessTools
 import com.newoether.agora.util.DebugLog
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.preferencesDataStore
@@ -16,7 +17,10 @@ import java.util.Locale
 import kotlinx.coroutines.flow.map
 
 internal const val DEFAULT_CONTEXT_COMPACT_ENABLED = true
-internal const val DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT = 5
+internal const val DEFAULT_CONTEXT_COMPACT_BATCH_SIZE = 8
+/** @deprecated Alias of [DEFAULT_CONTEXT_COMPACT_BATCH_SIZE] for legacy call sites. */
+internal const val DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT = DEFAULT_CONTEXT_COMPACT_BATCH_SIZE
+internal val CONTEXT_COMPACT_BATCH_SIZE_RANGE = 2..32
 
 private val Context.dataStore by preferencesDataStore(name = "settings")
 
@@ -62,11 +66,21 @@ class SettingsManager(private val context: Context) {
         it[CONTEXT_COMPACT_ENABLED] ?: DEFAULT_CONTEXT_COMPACT_ENABLED
     }
     val contextCompactModel: Flow<String?> = context.dataStore.data.map { it[CONTEXT_COMPACT_MODEL] }
-    val contextCompactPrompt: Flow<String> = context.dataStore.data.map { pref ->
-        pref[CONTEXT_COMPACT_PROMPT]?.takeIf { it.isNotBlank() } ?: BuiltInPrompts.CONTEXT_COMPACT_SYSTEM
+    /** Built-in only; user-editable compact prompts are retired. */
+    val contextCompactPrompt: Flow<String> = context.dataStore.data.map {
+        BuiltInPrompts.CONTEXT_COMPACT_SYSTEM
     }
-    val contextCompactRetainCount: Flow<Int> = context.dataStore.data.map {
-        it[CONTEXT_COMPACT_RETAIN_COUNT] ?: DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT
+    /** Batch size B: summary-batch width and trailing retain count. */
+    val contextCompactBatchSize: Flow<Int> = context.dataStore.data.map { prefs ->
+        prefs[CONTEXT_COMPACT_BATCH_SIZE]
+            ?: prefs[CONTEXT_COMPACT_RETAIN_COUNT]?.takeIf { it in CONTEXT_COMPACT_BATCH_SIZE_RANGE }
+            ?: DEFAULT_CONTEXT_COMPACT_BATCH_SIZE
+    }
+    /** Alias of [contextCompactBatchSize] for legacy compact call sites. */
+    val contextCompactRetainCount: Flow<Int> = contextCompactBatchSize
+    val contextCompactFreezeThreshold: Flow<Int> = context.dataStore.data.map { prefs ->
+        prefs[CONTEXT_COMPACT_FREEZE_THRESHOLD]?.let(ContextBudget::nearestPreset)
+            ?: ContextBudget.DEFAULT_FREEZE_THRESHOLD
     }
     val codeExecutionEnabled: Flow<Boolean> = context.dataStore.data.map { it[CODE_EXECUTION_ENABLED] ?: false }
     val googleSearchEnabled: Flow<Boolean> = context.dataStore.data.map { it[GOOGLE_SEARCH_ENABLED] ?: false }
@@ -112,7 +126,9 @@ class SettingsManager(private val context: Context) {
     }
     val activeEmbeddingModelId: Flow<String> = context.dataStore.data.map { it[ACTIVE_EMBEDDING_MODEL_ID] ?: "" }
 
-    val appLanguage: Flow<String> = context.dataStore.data.map { it[APP_LANGUAGE] ?: "system" }
+    val appLanguage: Flow<String> = context.dataStore.data.map {
+        normalizeAppLanguage(it[APP_LANGUAGE])
+    }
     val webSearchEnabled: Flow<Boolean> = context.dataStore.data.map { it[WEB_SEARCH_ENABLED] ?: true }
     val webSearchProvider: Flow<String> = context.dataStore.data.map {
         normalizeWebSearchProvider(it[WEB_SEARCH_PROVIDER])
@@ -175,6 +191,8 @@ class SettingsManager(private val context: Context) {
     val sandboxEnabled: Flow<Boolean> = context.dataStore.data.map { it[SANDBOX_ENABLED] ?: false }
     val sandboxSharedStorageEnabled: Flow<Boolean> =
         context.dataStore.data.map { it[SANDBOX_SHARED_STORAGE_ENABLED] ?: false }
+    val localCommandEnabled: Flow<Boolean> =
+        context.dataStore.data.map { it[LOCAL_COMMAND_ENABLED] ?: (it[NODE_ENABLED] ?: false || it[SANDBOX_ENABLED] ?: false) }
 
     val themeMode: Flow<String> = context.dataStore.data.map { it[THEME_MODE] ?: "FOLLOW_DEVICE" }
     val colorScheme: Flow<String> = context.dataStore.data.map { it[COLOR_SCHEME] ?: "DEFAULT" }
@@ -292,13 +310,16 @@ class SettingsManager(private val context: Context) {
             } catch (_: Exception) {
                 emptyList()
             }
-            val migratedPrompts = migrateLegacyDefaultPromptTitle(currentPrompts, locale)
+            val wrapMigrated = migrateAgoraUserMessageWraps(currentPrompts)
+            val migratedPrompts = migrateLegacyDefaultPromptTitle(wrapMigrated, locale)
             val runtimeMigrated = migrateOldRuntimeContext(migratedPrompts, locale)
-            if (runtimeMigrated != currentPrompts) {
-                prefs[SYSTEM_PROMPTS_JSON] = json.encodeToString(runtimeMigrated)
+            val storageMigrated = migrateStoragePermissionGuidance(runtimeMigrated, locale)
+            val detailMigrated = migrateDetailStoreGuidance(storageMigrated, locale)
+            if (detailMigrated != currentPrompts) {
+                prefs[SYSTEM_PROMPTS_JSON] = json.encodeToString(detailMigrated)
             }
             if (looksLikeFreshInstall) {
-                if (runtimeMigrated.isEmpty()) {
+                if (detailMigrated.isEmpty()) {
                     val defaultPrompt = DefaultSystemPrompt.create(locale)
                     prefs[SYSTEM_PROMPTS_JSON] = json.encodeToString(listOf(defaultPrompt))
                     if (prefs[ACTIVE_SYSTEM_PROMPT_ID] == null) {
@@ -307,6 +328,52 @@ class SettingsManager(private val context: Context) {
                 }
             }
         }
+    }
+
+    private fun migrateStoragePermissionGuidance(
+        prompts: List<SystemPromptEntry>,
+        locale: Locale,
+    ): List<SystemPromptEntry> {
+        if (prompts.isEmpty()) return prompts
+        val newDefault = DefaultSystemPrompt.create(locale)
+        val oldMarker =
+            "writing under shared storage such as /sdcard requires the user to grant all-files access in Remote Terminals settings"
+        val oldCliMarker =
+            "including packaged CLIs such as node, ffmpeg, and ffprobe; ffmpeg includes libx264 for H.264"
+        return prompts.map { entry ->
+            val systemText = entry.resolvedSystemItems.joinToString("") { it.value }
+            val needsUpdate =
+                oldMarker in systemText ||
+                    oldCliMarker in systemText ||
+                    ("execute_local_command" in systemText &&
+                        "request_all_files_access" !in systemText &&
+                        DefaultSystemPrompt.FACTORY_SEED_MARKER in systemText) ||
+                    (DefaultSystemPrompt.FACTORY_SEED_MARKER in systemText &&
+                        "execute_local_command" in systemText &&
+                        "start_local_process" !in systemText &&
+                        "start_remote_process" !in systemText) ||
+                    (DefaultSystemPrompt.FACTORY_SEED_MARKER in systemText &&
+                        ProcessTools.START_LOCAL in systemText &&
+                        ProcessTools.LIST !in systemText)
+            if (needsUpdate) {
+                entry.copy(
+                    systemItems = newDefault.systemItems,
+                    userPrependItems = newDefault.userPrependItems,
+                    userPostpendItems = newDefault.userPostpendItems,
+                )
+            } else {
+                entry
+            }
+        }
+    }
+
+    private fun migrateDetailStoreGuidance(
+        prompts: List<SystemPromptEntry>,
+        locale: Locale,
+    ): List<SystemPromptEntry> {
+        if (prompts.isEmpty()) return prompts
+        val newDefault = DefaultSystemPrompt.create(locale)
+        return prompts.map { migrateBakedAgoraPolicyFromPrompt(it, newDefault) }
     }
 
     private fun migrateOldRuntimeContext(
@@ -326,6 +393,13 @@ class SettingsManager(private val context: Context) {
                 entry
             }
         }
+    }
+
+    private fun migrateAgoraUserMessageWraps(
+        prompts: List<SystemPromptEntry>,
+    ): List<SystemPromptEntry> {
+        if (prompts.isEmpty()) return prompts
+        return prompts.map(::migrateAgoraUserMessageWrap)
     }
 
     private fun migrateLegacyDefaultPromptTitle(
@@ -434,7 +508,7 @@ class SettingsManager(private val context: Context) {
         context.dataStore.edit { it[ACTIVE_EMBEDDING_MODEL_ID] = id }
     }
     suspend fun saveAppLanguage(language: String) {
-        context.dataStore.edit { it[APP_LANGUAGE] = language }
+        context.dataStore.edit { it[APP_LANGUAGE] = normalizeAppLanguage(language) }
     }
     suspend fun saveWebSearchEnabled(enabled: Boolean) {
         context.dataStore.edit { it[WEB_SEARCH_ENABLED] = enabled }
@@ -559,13 +633,23 @@ class SettingsManager(private val context: Context) {
         }
     }
     suspend fun saveContextCompactPrompt(prompt: String) {
+        // Editable compact prompts removed; clear any legacy stored value.
+        context.dataStore.edit { prefs -> prefs.remove(CONTEXT_COMPACT_PROMPT) }
+    }
+    suspend fun saveContextCompactBatchSize(count: Int) {
+        require(count in CONTEXT_COMPACT_BATCH_SIZE_RANGE)
         context.dataStore.edit { prefs ->
-            if (prompt.isBlank()) prefs.remove(CONTEXT_COMPACT_PROMPT) else prefs[CONTEXT_COMPACT_PROMPT] = prompt
+            prefs[CONTEXT_COMPACT_BATCH_SIZE] = count
+            prefs.remove(CONTEXT_COMPACT_RETAIN_COUNT)
         }
     }
     suspend fun saveContextCompactRetainCount(count: Int) {
-        require(count >= 0)
-        context.dataStore.edit { it[CONTEXT_COMPACT_RETAIN_COUNT] = count }
+        saveContextCompactBatchSize(count.coerceIn(CONTEXT_COMPACT_BATCH_SIZE_RANGE))
+    }
+    suspend fun saveContextCompactFreezeThreshold(tokens: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[CONTEXT_COMPACT_FREEZE_THRESHOLD] = ContextBudget.nearestPreset(tokens)
+        }
     }
 
     suspend fun saveTitleGenerationModel(model: String?) {
@@ -638,6 +722,9 @@ class SettingsManager(private val context: Context) {
     }
     suspend fun saveSandboxEnabled(enabled: Boolean) {
         context.dataStore.edit { it[SANDBOX_ENABLED] = enabled }
+    }
+    suspend fun saveLocalCommandEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[LOCAL_COMMAND_ENABLED] = enabled }
     }
     suspend fun saveSandboxSharedStorageEnabled(enabled: Boolean) {
         context.dataStore.edit { it[SANDBOX_SHARED_STORAGE_ENABLED] = enabled }
@@ -753,6 +840,8 @@ class SettingsManager(private val context: Context) {
             prefs.remove(CONTEXT_COMPACT_MODEL)
             prefs.remove(CONTEXT_COMPACT_PROMPT)
             prefs.remove(CONTEXT_COMPACT_RETAIN_COUNT)
+            prefs.remove(CONTEXT_COMPACT_BATCH_SIZE)
+            prefs.remove(CONTEXT_COMPACT_FREEZE_THRESHOLD)
             prefs.remove(CODE_EXECUTION_ENABLED)
             prefs.remove(GOOGLE_SEARCH_ENABLED)
             prefs.remove(OPENAI_SERVICE_TIER_ENABLED)

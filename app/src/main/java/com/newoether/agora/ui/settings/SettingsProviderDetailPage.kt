@@ -41,6 +41,7 @@ import com.newoether.agora.data.ApiKeyEntry
 import com.newoether.agora.data.CustomEndpointProtocol
 import com.newoether.agora.data.CustomProviderNamePolicy
 import com.newoether.agora.data.LocalChatModelConfig
+import com.newoether.agora.model.ContextBudget
 import com.newoether.agora.ui.components.CustomEndpointProtocolSelector
 import com.newoether.agora.ui.components.clearFocusOnTap
 import com.newoether.agora.util.Constants
@@ -358,7 +359,7 @@ fun SettingsProviderDetailPage(
                                                 contentColor = MaterialTheme.colorScheme.onSurfaceVariant
                                             ) {
                                                 Text(
-                                                    "Context=${model.nCtx}",
+                                                    "Context=${ContextBudget.groupedLabel(model.nCtx)}",
                                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                                     style = MaterialTheme.typography.labelSmall
                                                 )

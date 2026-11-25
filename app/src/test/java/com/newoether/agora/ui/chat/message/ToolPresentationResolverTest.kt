@@ -17,6 +17,7 @@ class ToolPresentationResolverTest {
     fun providerHostedSearchNamesUseWebSearchPresentation() {
         assertEquals(ToolKind.WEB_SEARCH, ToolPresentationResolver.kindForToolName("openai_search"))
         assertEquals(ToolKind.WEB_SEARCH, ToolPresentationResolver.kindForToolName("google_search"))
+        assertEquals(ToolKind.FILE_OPEN, ToolPresentationResolver.kindForToolName("open_file"))
     }
 
     @Test
@@ -62,21 +63,33 @@ class ToolPresentationResolverTest {
         )
         assertEquals(null, singleLineShellCommand(" \n\t "))
         assertEquals("12345", singleLineShellCommand("123456789", maxCharacters = 5))
+        val huge = "  " + "cmd ".repeat(20_000) + "\n" + "tail"
+        val normalized = normalizeToolSummarySubject(huge)
+        assertTrue((normalized?.length ?: 0) in 1..MAX_TOOL_SUMMARY_SUBJECT_CHARS)
+        assertFalse(normalized!!.contains('\n'))
+        assertFalse(normalized.contains("  "))
     }
 
     @Test
     fun unfinishedArgumentsExposeProgressiveSubjectsAcrossToolKinds() {
         val cases = listOf(
-            Triple("execute_shell_command", """{"command":"cp /tmp/sour""", "cp /tmp/sour"),
+            Triple("execute_remote_command", """{"command":"cp /tmp/sour""", "cp /tmp/sour"),
             Triple("read_memory_file", """{"name":"project-no""", "project-no"),
             Triple("web_search", """{"query":"compose stream""", "compose stream"),
             Triple("web_fetch", """{"url":"https://exam""", "https://exam"),
             Triple("search_conversations", """{"query":"old deci""", "old deci"),
             Triple("read_conversation", """{"conversation_id":"conv-12""", "conv-12"),
-            Triple("get_shell_job", """{"job_id":"job-45""", "job-45"),
+            Triple("get_remote_job", """{"job_id":"job-45""", "job-45"),
             Triple("file_write", """{"path":"/tmp/progr""", "/tmp/progr"),
             Triple("view_image", """{"path":"/tmp/previ""", "/tmp/previ"),
+            Triple("read_image", """{"path":"/tmp/local""", "/tmp/local"),
+            Triple("open_file", """{"path":"/sdcard/Download/a.pd""", "/sdcard/Download/a.pd"),
+            Triple("download_file", """{"remote_path":"/r/a.png","target_dir":"/tmp""", "/r/a.png"),
+            Triple("upload_file_to_server", """{"local_path":"/sdcard/a.png","remote_path":"/r""", "/sdcard/a.png"),
             Triple("file_glob", """{"pattern":"**/*.k""", "**/*.k"),
+            Triple("read_local_file", """{"path":"/sdcard/no""", "/sdcard/no"),
+            Triple("grep_remote", """{"pattern":"TODO","path":"/src""", "TODO"),
+            Triple("get_process", """{"process_id":"local:aa""", "local:aa"),
             Triple("generate_image", """{"prompt":"blue mount""", "blue mount"),
             Triple("create_task", """{"name":"nightly ba""", "nightly ba"),
             Triple("delete_task", """{"id_or_name":"nightly ba""", "nightly ba"),
@@ -102,7 +115,7 @@ class ToolPresentationResolverTest {
         val first = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolArgs = """{"command":"printf \"hel""",
                 toolState = ToolExecutionStates.CALLING,
             ),
@@ -110,7 +123,7 @@ class ToolPresentationResolverTest {
         val second = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolArgs = """{"command":"printf \"hello\"""",
                 toolState = ToolExecutionStates.CALLING,
             ),
@@ -125,7 +138,7 @@ class ToolPresentationResolverTest {
         val presentation = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolArgs = """{"command":""",
                 toolState = ToolExecutionStates.CALLING,
             ),
@@ -170,7 +183,7 @@ class ToolPresentationResolverTest {
         val presentation = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolResult = null,
                 toolState = ToolExecutionStates.RUNNING,
                 toolProgress = "line one\n",
@@ -188,7 +201,7 @@ class ToolPresentationResolverTest {
         val presentation = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolResult = """{"background":true,"job_id":"abc","state":"running"}""",
             ),
         )
@@ -204,7 +217,7 @@ class ToolPresentationResolverTest {
         val presentation = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolResult = """{"error":"error","message":"Cannot connect to Conch: refused"}""",
             ),
         )
@@ -248,8 +261,8 @@ class ToolPresentationResolverTest {
         val presentation = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
-                toolResult = """{"type":"execute_shell_command","exit_code":0,"output":"abc"}""",
+                toolName = "execute_remote_command",
+                toolResult = """{"type":"execute_remote_command","exit_code":0,"output":"abc"}""",
             ),
         )
 
@@ -261,8 +274,8 @@ class ToolPresentationResolverTest {
         val presentation = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
-                toolResult = """{"type":"execute_shell_command","exit_code":0,"output":""}""",
+                toolName = "execute_remote_command",
+                toolResult = """{"type":"execute_remote_command","exit_code":0,"output":""}""",
             ),
         )
 
@@ -275,8 +288,8 @@ class ToolPresentationResolverTest {
         val presentation = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
-                toolResult = """{"type":"execute_shell_command","exit_code":127,"output":"not found"}""",
+                toolName = "execute_remote_command",
+                toolResult = """{"type":"execute_remote_command","exit_code":127,"output":"not found"}""",
             ),
         )
 
@@ -289,9 +302,9 @@ class ToolPresentationResolverTest {
         val presentation = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolState = ToolExecutionStates.SUCCEEDED,
-                toolResult = """{"type":"execute_shell_command","exit_code":2,"output":"bad arguments"}""",
+                toolResult = """{"type":"execute_remote_command","exit_code":2,"output":"bad arguments"}""",
             ),
         )
 
@@ -304,10 +317,10 @@ class ToolPresentationResolverTest {
         val presentation = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolArgs = """{"server":"requested"}""",
                 toolResult = """
-                    {"type":"execute_shell_command","server":"actual","exit_code":0,"output":"done"}
+                    {"type":"execute_remote_command","server":"actual","exit_code":0,"output":"done"}
                 """.trimIndent(),
                 toolTarget = "resolved",
             ),
@@ -322,11 +335,11 @@ class ToolPresentationResolverTest {
         val presentation = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolArgs = """{"command":"printf done"}""",
                 toolResult = """
                     {
-                      "type":"execute_shell_command",
+                      "type":"execute_remote_command",
                       "server":"conch",
                       "job_id":"job-1",
                       "result":{"state":"succeeded","exit_code":0,"output":"done"}
@@ -348,7 +361,7 @@ class ToolPresentationResolverTest {
         val running = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolState = ToolExecutionStates.RUNNING,
                 toolProgress = "partial",
             ),
@@ -356,14 +369,14 @@ class ToolPresentationResolverTest {
         val terminalWithoutCode = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
-                toolResult = """{"type":"execute_shell_command","output":"done"}""",
+                toolName = "execute_remote_command",
+                toolResult = """{"type":"execute_remote_command","output":"done"}""",
             ),
         )
         val background = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolResult = """{"background":true,"job_id":"job-1","state":"running"}""",
             ),
         )
@@ -385,9 +398,9 @@ class ToolPresentationResolverTest {
         val presentation = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolResult = """
-                    {"type":"execute_shell_command","exit_code":2,"stdout":"out","stderr":"err"}
+                    {"type":"execute_remote_command","exit_code":2,"stdout":"out","stderr":"err"}
                 """.trimIndent(),
             ),
         )
@@ -401,7 +414,7 @@ class ToolPresentationResolverTest {
         val presentation = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "execute_shell_command",
+                toolName = "execute_remote_command",
                 toolState = ToolExecutionStates.RUNNING,
                 toolProgress = "Connecting to tinybox",
                 toolTarget = "tinybox",
@@ -468,7 +481,7 @@ class ToolPresentationResolverTest {
         val running = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "wait_for_job",
+                toolName = "wait_remote_job",
                 toolState = ToolExecutionStates.RUNNING,
                 toolProgress = "streaming output",
                 toolTarget = "tinybox",
@@ -482,9 +495,9 @@ class ToolPresentationResolverTest {
         val terminal = ToolPresentationResolver.resolve(
             MessageSegment(
                 type = "tool",
-                toolName = "wait_for_job",
+                toolName = "wait_remote_job",
                 toolArgs = """{"job_id":"job-9"}""",
-                toolResult = """{"type":"wait_for_job","job_id":"job-9","result":{"state":"succeeded","exit_code":0,"output":"done"}}""",
+                toolResult = """{"type":"wait_remote_job","job_id":"job-9","result":{"state":"succeeded","exit_code":0,"output":"done"}}""",
             ),
         )
 

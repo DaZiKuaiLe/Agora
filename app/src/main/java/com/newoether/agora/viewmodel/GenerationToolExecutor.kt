@@ -10,8 +10,12 @@ import com.newoether.agora.model.RunEffectIdentity
 import com.newoether.agora.model.ToolCallData
 import com.newoether.agora.model.ToolExecutionStates
 import com.newoether.agora.sandbox.SandboxManagerFactory
+import com.newoether.agora.tool.AskModePolicy
+import com.newoether.agora.tool.DetailStore
+import com.newoether.agora.tool.DetailStoreToolProvider
+import com.newoether.agora.tool.FileToolDefinitions
 import com.newoether.agora.tool.ImageGenToolProvider
-import com.newoether.agora.tool.MemoryToolProvider
+import com.newoether.agora.tool.ProcessTools
 import com.newoether.agora.tool.SkillToolProvider
 import com.newoether.agora.tool.RagToolProvider
 import com.newoether.agora.tool.ShellToolProvider
@@ -65,59 +69,71 @@ internal interface GenerationToolPresentationSource {
 internal class GenerationToolExecutor private constructor(
     private val providers: List<ToolProvider>,
     private val imageGenProvider: ImageGenToolProvider?,
+    val detailStore: DetailStore,
 ) : GenerationToolDefinitionSource, GenerationToolPresentationSource {
     companion object {
         private val FILE_TOOL_NAMES = setOf(
-            "file_read",
-            "file_write",
-            "file_edit",
-            "file_glob",
-            "file_grep",
-            "view_image",
-        )
+            "read_image",
+            "open_file",
+            "upload_file_to_server",
+            "download_file",
+        ) + FileToolDefinitions.NAMES
 
         fun createDefault(
             app: Application,
             conversations: ConversationRepository,
-            memoryManager: MemoryManager,
+            @Suppress("UNUSED_PARAMETER") memoryManager: MemoryManager,
             skillManager: SkillManager,
             sandboxFactory: SandboxManagerFactory?,
             additionalProviders: List<ToolProvider>,
             confirmShellCommand: suspend (server: String, summary: String) -> Boolean,
+            requestAllFilesAccess: (suspend (reason: String?) -> AllFilesAccessController.Outcome)? = null,
+            persistSshDetectedShell: ((deviceId: String, detected: String) -> Unit)? = null,
         ): GenerationToolExecutor {
             val imageGenProvider = ImageGenToolProvider(app)
+            val detailStore = DetailStore(app)
             val shellProvider = ShellToolProvider(
                 sandboxFactory = sandboxFactory,
                 imageStore = ToolImageStore(app),
                 downloadsDir = java.io.File(app.filesDir, "downloads"),
+                context = app,
+                detailStore = detailStore,
             ).also { provider ->
                 provider.confirm = confirmShellCommand
+                provider.requestAllFilesAccess = requestAllFilesAccess
+                provider.persistSshDetectedShell = persistSshDetectedShell
             }
             return GenerationToolExecutor(
                 providers = listOf(
-                    MemoryToolProvider(memoryManager),
                     SkillToolProvider(skillManager),
                     WebSearchToolProvider(),
+                    DetailStoreToolProvider(detailStore),
                     RagToolProvider(conversations),
                     imageGenProvider,
                     shellProvider,
                 ) + additionalProviders,
                 imageGenProvider = imageGenProvider,
+                detailStore = detailStore,
             )
         }
 
         internal fun forTest(providers: List<ToolProvider>): GenerationToolExecutor =
-            GenerationToolExecutor(providers, imageGenProvider = null)
+            GenerationToolExecutor(
+                providers = providers,
+                imageGenProvider = null,
+                detailStore = DetailStore(
+                    directory = kotlin.io.path.createTempDirectory("agora-detail-store").toFile(),
+                ),
+            )
     }
 
     override fun definitions(context: GenerationContext): List<ToolDefinition> =
-        providers.flatMap { it.definitions(context) }
+        providers.flatMap { it.definitions(context) }.forAskMode(context)
 
     fun imageDefinitions(context: GenerationContext): List<ToolDefinition> =
-        imageGenProvider?.definitions(context).orEmpty()
+        imageGenProvider?.definitions(context).orEmpty().forAskMode(context)
 
-    fun memoryDefinitions(context: GenerationContext): List<ToolDefinition> =
-        providers.filterIsInstance<MemoryToolProvider>().flatMap { it.definitions(context) }
+    fun memoryDefinitions(context: GenerationContext): List<ToolDefinition> = emptyList()
 
     fun webSearchDefinitions(context: GenerationContext): List<ToolDefinition> =
         providers.filterIsInstance<WebSearchToolProvider>().flatMap { it.definitions(context) }
@@ -129,11 +145,13 @@ internal class GenerationToolExecutor private constructor(
         providers.filterIsInstance<ShellToolProvider>()
             .flatMap { it.definitions(context) }
             .filter { it.function.name !in FILE_TOOL_NAMES }
+            .forAskMode(context)
 
     fun fileDefinitions(context: GenerationContext): List<ToolDefinition> =
         providers.filterIsInstance<ShellToolProvider>()
             .flatMap { it.definitions(context) }
             .filter { it.function.name in FILE_TOOL_NAMES }
+            .forAskMode(context)
 
     override fun presentationMetadata(name: String): ToolPresentationMetadata? {
         if (name.isBlank()) return null
@@ -169,12 +187,12 @@ internal class GenerationToolExecutor private constructor(
         onEvent: suspend (ToolExecutionEvent) -> Unit,
     ): AuthorizedToolResult {
         if (call.name !in call.authorizedToolNames) {
-            return call.result(
-                ToolExecutionResult(
-                    text = "Error executing tool '${call.name}': tool was not authorized for this provider pass",
-                    isError = true,
-                ),
-            )
+            val text = if (call.context.askMode) {
+                "Error executing tool '${call.name}': Ask mode is read-only and this tool is not in the request. Do not retry. The refusal is the mode, not another failure."
+            } else {
+                "Error executing tool '${call.name}': tool was not authorized for this provider pass"
+            }
+            return call.result(ToolExecutionResult(text = text, isError = true))
         }
         val completeArguments = call.arguments.ifBlank { "{}" }
         val argumentsAreCompleteObject = runCatching {
@@ -251,6 +269,9 @@ internal fun appendBoundedToolOutput(
     else combined.takeLast(maxChars)
 }
 
+private fun List<ToolDefinition>.forAskMode(context: GenerationContext): List<ToolDefinition> =
+    if (!context.askMode) this else filter { AskModePolicy.allows(it.function.name) }
+
 internal fun finalToolState(result: String): String {
     if (result.isEmpty()) return ToolExecutionStates.EMPTY
     val resultObject = runCatching {
@@ -261,6 +282,11 @@ internal fun finalToolState(result: String): String {
     if (result.startsWith("Error", ignoreCase = true) || errorCode != null) {
         return ToolExecutionStates.FAILED
     }
+    val runningFlag = (resultObject?.get("running") as? JsonPrimitive)
+        ?.content
+        ?.toBooleanStrictOrNull() == true
+    val hasProcessId = resultObject?.get(ProcessTools.PROCESS_ID) != null ||
+        resultObject?.get("async_command_id") != null
     val isBackground = (resultObject?.get("background") as? JsonPrimitive)
         ?.content
         ?.toBooleanStrictOrNull() == true ||
@@ -269,7 +295,8 @@ internal fun finalToolState(result: String): String {
                 ?.content
                 ?.equals("running", ignoreCase = true) == true &&
                 resultObject.get("job_id") != null
-            )
+            ) ||
+        (runningFlag && hasProcessId)
     return if (isBackground) ToolExecutionStates.BACKGROUND_RUNNING
     else ToolExecutionStates.SUCCEEDED
 }

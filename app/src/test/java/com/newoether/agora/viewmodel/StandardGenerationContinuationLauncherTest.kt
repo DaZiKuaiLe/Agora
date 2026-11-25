@@ -45,7 +45,7 @@ class StandardGenerationContinuationLauncherTest {
         val launched = CompletableDeferred<Unit>()
 
         coEvery {
-            conversations.getMessagesForConversationSnapshot("conversation")
+            conversations.getMessagesByIds(any())
         } returns listOf(parent)
         coEvery {
             conversations.restoreBranchSelections("conversation")
@@ -123,7 +123,7 @@ class StandardGenerationContinuationLauncherTest {
             runId = "origin-run",
             runSequence = 0,
         )
-        coEvery { conversations.getMessagesForConversationSnapshot("conversation") } returns
+        coEvery { conversations.getMessagesByIds(any()) } returns
             listOf(parent)
         coEvery { conversations.restoreBranchSelections("conversation") } returns emptyMap()
         coEvery {
@@ -192,7 +192,7 @@ class StandardGenerationContinuationLauncherTest {
             runSequence = 2,
         )
         coEvery {
-            conversations.getMessagesForConversationSnapshot("conversation")
+            conversations.getMessagesByIds(any())
         } returns listOf(parent)
         coEvery {
             conversations.restoreBranchSelections("conversation")
@@ -286,7 +286,7 @@ class StandardGenerationContinuationLauncherTest {
         val launchedRequest = slot<BoundRunGenerationRequest>()
         val launched = CompletableDeferred<Unit>()
         coEvery {
-            conversations.getMessagesForConversationSnapshot("conversation")
+            conversations.getMessagesByIds(any())
         } returns listOf(parent, target, suffix)
         coEvery { conversations.restoreBranchSelections("conversation") } returns selected
         coEvery {
@@ -461,8 +461,9 @@ class StandardGenerationContinuationLauncherTest {
             runSequence = 0,
         )
         coEvery {
-            conversations.getMessagesForConversationSnapshot("conversation")
-        } returnsMany listOf(listOf(parent), listOf(parent, terminal))
+            conversations.getMessagesByIds(any())
+        } returns listOf(parent)
+        coEvery { conversations.getMessage(any()) } returns terminal
         coEvery { conversations.restoreBranchSelections("conversation") } returns emptyMap()
         coEvery {
             conversations.createRunWithMessages(

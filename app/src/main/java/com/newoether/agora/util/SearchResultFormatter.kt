@@ -10,25 +10,30 @@ import kotlinx.serialization.json.jsonObject
 
 object SearchResultFormatter {
 
-    fun isRawSearchResult(text: String): Boolean {
-        // Nearly every persisted user/assistant row is Markdown. Reject it before constructing a
-        // JSON parser (and, previously, an exception) on every Room emission.
+    private val RAW_RESULT_TYPES = setOf(
+        "web_search",
+        "search_conversations",
+        "search_current_conversation",
+        "execute_remote_command",
+        "execute_local_command",
+        "list_remote_shells",
+        "list_memory_files",
+        "list_skill_files",
+        "list_conversations",
+        "read_conversation",
+    )
+
+    private val TYPE_FIELD = Regex("\"type\"\\s*:\\s*\"([^\"]+)\"")
+    private const val TYPE_PROBE_CHARS = 2_048
+
+    fun isRawSearchResult(text: String): Boolean = rawResultType(text) != null
+
+    internal fun rawResultType(text: String): String? {
         val firstContent = text.indexOfFirst { character -> !character.isWhitespace() }
-        if (firstContent < 0 || text[firstContent] != '{') return false
-        return try {
-            val type = Json.parseToJsonElement(text).jsonObject["type"]
-                ?.let { (it as? JsonPrimitive)?.content }
-            type == "web_search" ||
-                type == "search_conversations" ||
-                type == "execute_shell_command" ||
-                type == "list_shells" ||
-                type == "list_memory_files" ||
-                type == "list_skill_files" ||
-                type == "list_conversations" ||
-                type == "read_conversation"
-        } catch (_: Exception) {
-            false
-        }
+        if (firstContent < 0 || text[firstContent] != '{') return null
+        val end = minOf(text.length, firstContent + TYPE_PROBE_CHARS)
+        val type = TYPE_FIELD.find(text.substring(firstContent, end))?.groupValues?.getOrNull(1)
+        return type?.takeIf { it in RAW_RESULT_TYPES }
     }
 
     fun format(text: String, context: Context): String {
@@ -39,12 +44,13 @@ object SearchResultFormatter {
             if (error != null) return formatError(json, error, context)
             when (json["type"]?.let { (it as? JsonPrimitive)?.content }) {
                 "web_search" -> formatWebSearch(json, context)
-                "search_conversations" -> formatConversationSearch(json, context)
+                "search_conversations", "search_current_conversation" -> formatConversationSearch(json, context)
                 "list_conversations" -> formatConversationList(json, context)
                 "read_conversation" -> formatConversationRead(json, context)
                 "list_memory_files", "list_skill_files" -> formatMemoryList(json)
-                "list_shells" -> formatShellList(json, context)
-                "execute_shell_command" -> formatShellCommand(json, context)
+                "list_remote_shells" -> formatShellList(json, context)
+                "execute_remote_command", "execute_local_command" ->
+                    formatShellCommand(json, context)
                 else -> text
             }
         } catch (_: Exception) {

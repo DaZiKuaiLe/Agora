@@ -46,6 +46,31 @@ class ContextTokenEstimatorTest {
     }
 
     @Test
+    fun systemPromptEstimateMatchesFixedCostWithoutToolsAndExcludesSchemas() {
+        val system = "System prompt"
+        val tool = ToolDefinition(
+            function = ToolFunction(
+                name = "shell",
+                description = "Execute a command",
+                parameters = ToolParameters(
+                    properties = linkedMapOf(
+                        "command" to ToolProperty("string", "Command text"),
+                    ),
+                    required = listOf("command"),
+                ),
+            ),
+        )
+        val systemOnly = ContextTokenEstimator.estimateSystemPrompt(system)
+        assertEquals(systemOnly, ContextTokenEstimator.estimateFixed(system, emptyList()))
+        assertTrue(ContextTokenEstimator.estimateFixed(system, listOf(tool)) > systemOnly)
+        val message = ChatMessage(id = "u", text = "hello", participant = Participant.USER)
+        assertEquals(
+            ContextTokenEstimator.estimate(listOf(message)),
+            ContextTokenEstimator.estimateMessage(message),
+        )
+    }
+
+    @Test
     fun fixedCostIncludesApiOnlyInitialUserPrompt() {
         val withoutInvocation = ContextTokenEstimator.estimateFixed(
             systemPrompt = "System prompt",

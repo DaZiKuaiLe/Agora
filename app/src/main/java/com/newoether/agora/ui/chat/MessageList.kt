@@ -1,14 +1,15 @@
 package com.newoether.agora.ui.chat
 
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -39,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.dp
 import com.newoether.agora.model.ChatMessage
 import com.newoether.agora.model.MessageGenerationBoundaryResolver
@@ -68,25 +70,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import kotlin.math.abs
 import kotlin.math.roundToInt
-
-private data class RunProjectionMessageKey(
-    val id: String,
-    val parentId: String?,
-    val participant: Participant,
-    val timestamp: Long,
-    val runId: String?,
-    val runSequence: Long?,
-)
-
-private fun ChatMessage.toRunProjectionKey(): RunProjectionMessageKey =
-    RunProjectionMessageKey(
-        id = id,
-        parentId = parentId,
-        participant = participant,
-        timestamp = timestamp,
-        runId = runId,
-        runSequence = runSequence,
-    )
 
 internal fun compactMessageActionsEnabled(
     isLoading: Boolean,
@@ -146,11 +129,15 @@ internal fun MessageList(
     onRegenerate: (String) -> Boolean = { false },
     onFork: (String) -> Unit = {},
     onShare: (String) -> Unit = {},
+    onToggleCompactLock: (String, Boolean) -> Unit = { _, _ -> },
     onRecompact: (String) -> Unit = {},
     onDelete: (String) -> Unit = {},
     searchQuery: String = "",
     activeSearchMatch: ConversationSearchMatch? = null,
     onSearchMatchDistance: (key: String, distanceToViewportCenter: Float) -> Unit = { _, _ -> },
+    pendingJumpMessageId: String? = null,
+    pendingJumpToken: Long = 0L,
+    onJumpConsumed: () -> Unit = {},
     selectionMode: Boolean = false,
     selectedMessageIds: Set<String> = emptySet(),
     onToggleMessageSelection: (String) -> Unit = {},
@@ -158,10 +145,9 @@ internal fun MessageList(
     onFileContentClick: ((fileName: String, content: String) -> Unit)? = null,
     onPdfPagesClick: ((pages: List<String>, startIndex: Int) -> Unit)? = null,
     thoughtExpandedStates: SnapshotStateMap<String, Boolean> = remember { mutableStateMapOf() },
-    lifecycleAppearanceRegistry: MessageLifecycleAppearanceRegistry =
-        remember { MessageLifecycleAppearanceRegistry() },
-    segmentAppearanceRegistry: SegmentAppearanceRegistry =
-        remember { SegmentAppearanceRegistry() },
+    loadMessageDetail: suspend (String) -> ChatMessage? = { null },
+    lifecycleAppearanceRegistry: MessageLifecycleAppearanceRegistry = remember { MessageLifecycleAppearanceRegistry() },
+    segmentAppearanceRegistry: SegmentAppearanceRegistry = remember { SegmentAppearanceRegistry() },
     lifecycleEntranceTargetMessageId: String? = null,
 ) {
     val motionPolicy = LocalAgoraMotionPolicy.current
@@ -213,6 +199,11 @@ internal fun MessageList(
         if (programmaticScrollActive) cancelMutationAnchoring()
     }
 
+    var jumpScrollActive by remember(state) { mutableStateOf(false) }
+    var userScrollHoldoff by remember(state, conversationId) { mutableStateOf(false) }
+    val layoutScrollBusy = programmaticScrollActive || jumpScrollActive || userScrollHoldoff
+    val latestPendingJumpMessageId by rememberUpdatedState(pendingJumpMessageId)
+
     fun setStreamingTailFollowMode(nextMode: StreamingTailFollowMode) {
         streamingTailFollowMode = nextMode
         val attached =
@@ -232,9 +223,27 @@ internal fun MessageList(
         if (isSwitching) cancelMutationAnchoring()
     }
     LaunchedEffect(state, conversationId) {
+        snapshotFlow { state.isScrollInProgress }
+            .distinctUntilChanged()
+            .collect { inProgress ->
+                if (inProgress) {
+                    userScrollHoldoff = true
+                    cancelMutationAnchoring()
+                } else {
+                    // Drag-end can report idle for a frame before fling starts. Keep mutation
+                    // locking and auto-expand off until that window has passed.
+                    repeat(3) { withFrameNanos { } }
+                    if (!state.isScrollInProgress) {
+                        userScrollHoldoff = false
+                    }
+                }
+            }
+    }
+    LaunchedEffect(state, conversationId) {
         state.interactionSource.interactions.collect { interaction ->
             when (interaction) {
                 is DragInteraction.Start -> {
+                    userScrollHoldoff = true
                     cancelMutationAnchoring()
                     streamingTailUserDragInProgress = true
                     // A real gesture is authoritative. Clear the externally-observed flag before
@@ -259,15 +268,13 @@ internal fun MessageList(
         onDispose { cancelMutationAnchoring() }
     }
 
-    val visibleProjectionKey = remember(messages) {
-        messages.list.map(ChatMessage::toRunProjectionKey)
-    }
-    val allProjectionKey = remember(allMessages) {
-        allMessages.list.map(ChatMessage::toRunProjectionKey)
-    }
+    val visibleProjectionIdentity = remember { RunProjectionIdentityCache() }
+    val allProjectionIdentity = remember { RunProjectionIdentityCache() }
+    val visibleProjectionToken = visibleProjectionIdentity.tokenOf(messages.list)
+    val allProjectionToken = allProjectionIdentity.tokenOf(allMessages.list)
     val inContextIds = contextRetainedMessageIds
 
-    val activeMessageIds = remember(messages) {
+    val activeMessageIds = remember(visibleProjectionToken) {
         messages.list.mapTo(hashSetOf()) { message -> message.id }
     }
     val presentationMessages = remember(messages, retainedRegenerationExitMessages) {
@@ -279,11 +286,31 @@ internal fun MessageList(
     val turnCache = remember { MessageListTurnCache() }
     val turns = remember(presentationMessages) { turnCache.update(presentationMessages) }
 
+    LaunchedEffect(pendingJumpToken) {
+        if (pendingJumpToken == 0L) return@LaunchedEffect
+        val messageId = latestPendingJumpMessageId ?: return@LaunchedEffect
+        val turnIndex = messageListTurnIndex(turns, messageId)
+        if (turnIndex < 0) {
+            onJumpConsumed()
+            return@LaunchedEffect
+        }
+        cancelMutationAnchoring()
+        // Jump must own the list: streaming attach would immediately drag back to the absolute
+        // bottom and park the target on the composer edge.
+        setStreamingTailFollowMode(StreamingTailFollowMode.INACTIVE)
+        jumpScrollActive = true
+        try {
+            jumpChatListToTurn(listState = state, turnIndex = turnIndex)
+        } finally {
+            jumpScrollActive = false
+            onJumpConsumed()
+        }
+    }
+
     LaunchedEffect(
         conversationId,
         editingMessageId,
         turns,
-        motionPolicy.allowProgrammaticScrollMotion,
     ) {
         val messageId = editingMessageId ?: return@LaunchedEffect
         val turnIndex = messageListTurnIndex(turns, messageId)
@@ -295,41 +322,9 @@ internal fun MessageList(
         withFrameNanos { }
         cancelMutationAnchoring()
         val topInsetPx = with(density) { 140.dp.toPx() }
-        if (!motionPolicy.allowProgrammaticScrollMotion) {
-            state.scrollToItem(
-                index = turnIndex,
-                scrollOffset = -topInsetPx.roundToInt(),
-            )
-            return@LaunchedEffect
-        }
-
-        val fallbackHeightPx = with(density) { 160.dp.toPx() }
-        val estimatedTurnHeights = FloatArray(turns.size) { index ->
-            estimateMessageListTurnHeightPx(
-                turn = turns[index],
-                messageHeights = messageHeights,
-                fallbackHeightPx = fallbackHeightPx,
-            )
-        }
-        val heightPrefix = FloatArray(turns.size + 1)
-        for (index in estimatedTurnHeights.indices) {
-            heightPrefix[index + 1] = heightPrefix[index] + estimatedTurnHeights[index]
-        }
-        state.smoothSeekToItem(
-            targetIndex = { turnIndex },
-            targetErrorPx = { visibleTarget -> visibleTarget.offset - topInsetPx },
-            estimatedErrorPx = {
-                val firstVisible = state.layoutInfo.visibleItemsInfo
-                    .minByOrNull { item -> item.index }
-                    ?: return@smoothSeekToItem null
-                val firstIndex = firstVisible.index.coerceIn(0, turns.size)
-                firstVisible.offset +
-                    heightPrefix[turnIndex] -
-                    heightPrefix[firstIndex] -
-                    topInsetPx
-            },
-            exactTargetReady = { true },
-            minimumStepPx = with(density) { 2.dp.toPx() },
+        state.scrollToItem(
+            index = turnIndex,
+            scrollOffset = -topInsetPx.roundToInt(),
         )
     }
 
@@ -592,29 +587,47 @@ internal fun MessageList(
 
     // Text/status/tool deltas do not change branch/run structure. Cache this O(n) projection by its
     // structural fields; copy text is read from the live MessageItem below.
-    val runPresentation = remember(visibleProjectionKey, allProjectionKey) {
+    val runPresentation = remember(visibleProjectionToken, allProjectionToken) {
         RunUiProjection.project(messages.list, allMessages.list)
     }
 
-    val tailMinHeightPx = if (lastUserMessage == null || viewportHeight == 0) {
+    val listViewportHeightPx =
+        (state.layoutInfo.viewportEndOffset - state.layoutInfo.viewportStartOffset)
+            .coerceAtLeast(0)
+    val effectiveViewportHeightPx =
+        if (viewportHeight > 0) viewportHeight else listViewportHeightPx
+    val layoutDirection = LocalLayoutDirection.current
+    val topInsetPx = with(density) { contentPadding.calculateTopPadding().roundToPx() }
+        .takeIf { inset -> inset > 0 }
+        ?: with(density) { 140.dp.roundToPx() }
+    val bottomObstructionPx = with(density) { contentPadding.calculateBottomPadding().roundToPx() }
+        .takeIf { inset -> inset > 0 }
+        ?: with(density) { (bottomBarHeight + 8.dp).roundToPx() }
+    val tailMinHeightPx = if (lastUserMessage == null || effectiveViewportHeightPx == 0) {
         0
     } else {
         calculateTailMinHeightPx(
-            viewportHeightPx = viewportHeight,
-            targetTopPx = with(density) { 140.dp.roundToPx() },
-            bottomObstructionPx = with(density) {
-                (bottomBarHeight + 8.dp).roundToPx()
-            },
+            viewportHeightPx = effectiveViewportHeightPx,
+            targetTopPx = topInsetPx,
+            bottomObstructionPx = bottomObstructionPx,
         )
     }
-    val tailMinHeight = with(density) { tailMinHeightPx.toDp() }
+    val lastTurn = turns.lastOrNull()?.takeIf { turn -> turn.key == lastUserMessage?.id }
+    val followBottomExtraPaddingPx = calculateFollowBottomExtraPaddingPx(
+        minimumHeightPx = tailMinHeightPx,
+        lastTurnContentHeightPx = measuredTurnContentHeightPx(lastTurn, messageHeights),
+    )
+    val listContentPadding = PaddingValues(
+        start = contentPadding.calculateStartPadding(layoutDirection),
+        top = contentPadding.calculateTopPadding(),
+        end = contentPadding.calculateEndPadding(layoutDirection),
+        bottom = contentPadding.calculateBottomPadding() +
+            with(density) { followBottomExtraPaddingPx.toDp() },
+    )
 
-    // One progressive actor owns the complete search movement. Far-away turns are approached in
-    // bounded per-frame steps; once composed, the same actor retargets against exact glyph
-    // geometry. There is no animateScrollToItem teleport and no second correction animation.
+    // Instant teleport to the active search match (no progressive far-distance seek).
     LaunchedEffect(
         activeSearchMatch?.key,
-        motionPolicy.allowProgrammaticScrollMotion,
     ) {
         val match = activeSearchMatch ?: return@LaunchedEffect
         val turnIndex = messageListTurnIndex(turns, match.messageId)
@@ -625,61 +638,31 @@ internal fun MessageList(
         val targetCenterY = topInsetPx +
             ((viewportHeight - bottomInsetPx - topInsetPx).coerceAtLeast(0f) / 2f)
         val fallbackHeightPx = with(density) { 160.dp.toPx() }
-        val estimatedTurnHeights = FloatArray(turns.size) { index ->
-            estimateMessageListTurnHeightPx(
-                turn = turns[index],
-                messageHeights = messageHeights,
-                fallbackHeightPx = fallbackHeightPx,
-            )
-        }
-        val heightPrefix = FloatArray(turns.size + 1)
-        for (index in estimatedTurnHeights.indices) {
-            heightPrefix[index + 1] = heightPrefix[index] + estimatedTurnHeights[index]
-        }
         val estimatedAnchorInTurn = estimateSearchMatchCenterInTurnPx(
             turn = turns[turnIndex],
             match = match,
             messageHeights = messageHeights,
             fallbackHeightPx = fallbackHeightPx,
         )
-        if (!motionPolicy.allowProgrammaticScrollMotion) {
-            state.scrollToItem(
-                index = turnIndex,
-                scrollOffset = (
-                    listRootY +
-                        estimatedAnchorInTurn -
-                        targetCenterY
-                    ).roundToInt(),
-            )
-            return@LaunchedEffect
-        }
-
-        state.smoothSeekToItem(
-            targetIndex = { turnIndex },
-            targetErrorPx = { visibleTarget ->
-                val anchorInRootCoordinates =
-                    searchMatchCentersInTurn[match.key]
-                        ?: (listRootY + estimatedAnchorInTurn)
-                visibleTarget.offset + anchorInRootCoordinates - targetCenterY
-            },
-            estimatedErrorPx = {
-                val firstVisible = state.layoutInfo.visibleItemsInfo
-                    .minByOrNull { item -> item.index }
-                    ?: return@smoothSeekToItem null
-                val firstIndex = firstVisible.index.coerceIn(0, turns.size)
-                val distanceFromFirstToTarget =
-                    heightPrefix[turnIndex] - heightPrefix[firstIndex]
+        state.scrollToItem(
+            index = turnIndex,
+            scrollOffset = (
                 listRootY +
-                    firstVisible.offset +
-                    distanceFromFirstToTarget +
                     estimatedAnchorInTurn -
                     targetCenterY
-            },
-            exactTargetReady = {
-                searchMatchCentersInTurn.containsKey(match.key)
-            },
-            minimumStepPx = with(density) { 2.dp.toPx() },
+                ).roundToInt(),
         )
+        withFrameNanos { }
+        val exactAnchor = searchMatchCentersInTurn[match.key]
+        if (exactAnchor != null) {
+            val item = state.layoutInfo.visibleItemsInfo.find { it.index == turnIndex }
+            if (item != null) {
+                val delta = item.offset + exactAnchor - targetCenterY
+                if (kotlin.math.abs(delta) > 1.5f) {
+                    state.scrollBy(delta)
+                }
+            }
+        }
     }
 
     fun restoreAnchor(anchor: MessageListViewportAnchor): Boolean {
@@ -800,7 +783,9 @@ internal fun MessageList(
             visualizeContextRollout = visualizeContextRollout,
             toolCallDisplayMode = toolCallDisplayMode,
             thinkingSegmentDisplayMode = thinkingSegmentDisplayMode,
-            autoExpandActiveGroup = autoExpandActiveGroup,
+            autoExpandActiveGroup = autoExpandActiveGroup &&
+                !state.isScrollInProgress &&
+                !userScrollHoldoff,
 
             parseInlineDollarMath = parseInlineDollarMath,
             groupedSegmentAutoExpansionController =
@@ -836,6 +821,7 @@ internal fun MessageList(
             onRegenerate = onRegenerate,
             onFork = onFork,
             onShare = onShare,
+            onToggleCompactLock = onToggleCompactLock,
             onRecompact = onRecompact,
             deleteTargetMessageId = presentation?.deleteTargetMessageId ?: message.id,
             onDelete = onDelete,
@@ -870,7 +856,7 @@ internal fun MessageList(
                     val mode = messageListLayoutMode(
                         isSwitching = isSwitching,
                         isScrollInProgress =
-                            state.isScrollInProgress || programmaticScrollActive,
+                            state.isScrollInProgress || layoutScrollBusy,
                     )
                     // Measurement remains available to explicit scrolling calculations, but
                     // bottom geometry no longer reads it. The tail's minimum height absorbs
@@ -894,7 +880,7 @@ internal fun MessageList(
                     messageListLayoutMode(
                         isSwitching = isSwitching,
                         isScrollInProgress =
-                            state.isScrollInProgress || programmaticScrollActive,
+                            state.isScrollInProgress || layoutScrollBusy,
                     ) == MessageListLayoutMode.STABLE
                 ) {
                     val anchorMessage = turns
@@ -931,60 +917,54 @@ internal fun MessageList(
                 }
             },
             thoughtExpandedStates = thoughtExpandedStates,
+            loadMessageDetail = loadMessageDetail,
         )
     }
 
     Box(modifier = modifier) {
         LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .onGloballyPositioned { coordinates ->
-                    listRootY = coordinates.positionInRoot().y
-                },
-            contentPadding = contentPadding,
-            reverseLayout = false,
-            state = state,
-            userScrollEnabled = userScrollEnabled
-        ) {
-            items(turns, key = { turn -> stableVisualKey(turn.key) }) { turn ->
-                val isLastTurn = turn.key == lastUserMessage?.id
-                // A turn's key and composition survive when the next USER is appended. Only the
-                // new turn enters; the previous assistant never moves to a different Lazy item.
-                Box(modifier = Modifier) {
-                    // The last turn atomically absorbs bottom space. Earlier turns keep the same
-                    // Column call site with a zero minimum, so losing tail status cannot dispose
-                    // or recreate any child message.
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(
-                                min = if (isLastTurn) tailMinHeight else 0.dp,
-                            ),
-                    ) {
-                        val lastActiveMessageIndex = turn.messages.indexOfLast { message ->
-                            message.id in activeMessageIds
-                        }
-                        turn.messages.forEachIndexed { index, message ->
-                            key(stableVisualKey(message.id)) {
-                                renderMessage(message)
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onGloballyPositioned { coordinates ->
+                        listRootY = coordinates.positionInRoot().y
+                    },
+                contentPadding = listContentPadding,
+                reverseLayout = false,
+                state = state,
+                userScrollEnabled = userScrollEnabled,
+            ) {
+                items(turns, key = { turn -> stableVisualKey(turn.key) }) { turn ->
+                    val isLastTurn = turn.key == lastUserMessage?.id
+                    // A turn's key and composition survive when the next USER is appended. Only the
+                    // new turn enters; the previous assistant never moves to a different Lazy item.
+                    Box(modifier = Modifier) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            val lastActiveMessageIndex = turn.messages.indexOfLast { message ->
+                                message.id in activeMessageIds
                             }
-                            if (isLastTurn && index == lastActiveMessageIndex) {
-                                key("agora:streaming-tail:${turn.key}") {
-                                    StreamingTailIndicator(
-                                        // Text-bottom placement belongs only to the visual dot.
-                                        // Page attachment is owned by AbsoluteBottomSentinelKey.
-                                        visible =
-                                            streamingIndicatorVisible && answeringTailVisible,
-                                    )
+                            turn.messages.forEachIndexed { index, message ->
+                                key(stableVisualKey(message.id)) {
+                                    renderMessage(message)
+                                }
+                                if (isLastTurn && index == lastActiveMessageIndex) {
+                                    key("agora:streaming-tail:${turn.key}") {
+                                        StreamingTailIndicator(
+                                            // Text-bottom placement belongs only to the visual dot.
+                                            // Page attachment is owned by AbsoluteBottomSentinelKey.
+                                            visible =
+                                                streamingIndicatorVisible && answeringTailVisible,
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            // A stable physical-end target, deliberately separate from the streaming-tail
-            // indicator. Reaching this item and exhausting canScrollForward means the actual
-            // LazyColumn maximum extent has been reached.
+                // A stable physical-end target, deliberately separate from the streaming-tail
+                // indicator. Reaching this item and exhausting canScrollForward means the actual
+                // LazyColumn maximum extent has been reached.
             item(key = AbsoluteBottomSentinelKey) {
                 Spacer(Modifier.fillMaxWidth().height(1.dp))
             }

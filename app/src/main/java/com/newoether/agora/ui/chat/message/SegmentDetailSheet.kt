@@ -66,9 +66,15 @@ internal fun usesVirtualizedSegmentDetail(
 ): Boolean =
     selectedSegmentCount == 1 &&
         segmentType != "tool" &&
+        segmentType != "thought" &&
         !(segmentType == "transcription" && segmentContentIsBlank) &&
         !isStreaming &&
         !hasFooter
+
+internal fun usesPlainThoughtDetail(
+    segmentType: String,
+    hasDirectMarkdown: Boolean,
+): Boolean = segmentType == "thought" && !hasDirectMarkdown
 
 internal fun segmentSheetBackAction(
     handleBackInternally: Boolean,
@@ -170,12 +176,19 @@ internal fun SegmentDetailSheet(
                     isStreaming = observedStreamingMarkdown,
                     hasFooter = detailFooter != null || errorText != null,
                 )
+        val usesChunkedThought =
+            directMarkdownContent == null &&
+                directSelectableTextContent == null &&
+                usesChunkedThoughtDetail(
+                    selectedSegmentCount = selectedSegs.size,
+                    segmentType = seg.type,
+                )
         val sheetState = rememberSmoothBottomSheetState()
 
         LaunchedEffect(detailPageIndex) {
             if (detailPageIndex >= 0) {
                 scrollState.scrollTo(0)
-                lazyDetailListState.scrollToItem(0)
+                if (!usesChunkedThought) lazyDetailListState.scrollToItem(0)
             }
         }
 
@@ -200,7 +213,7 @@ internal fun SegmentDetailSheet(
             contentAtTop = {
                 when {
                     showSegmentListPage -> segmentListScrollState.value == 0
-                    usesVirtualizedSingleMarkdown ->
+                    usesVirtualizedSingleMarkdown || usesChunkedThought ->
                         lazyDetailListState.firstVisibleItemIndex == 0 &&
                             lazyDetailListState.firstVisibleItemScrollOffset == 0
                     else -> scrollState.value == 0
@@ -293,6 +306,17 @@ internal fun SegmentDetailSheet(
                                     }
                                 }
                             }
+                        } else if (usesChunkedThought) {
+                            ThoughtDetailLazyPanel(
+                                content = seg.content,
+                                isStreaming = isStreaming,
+                                listState = lazyDetailListState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .noOpBringIntoView()
+                                    .navigationBarsPadding(),
+                                emptyStreamingText = emptyStreamingText,
+                            )
                         } else if (usesVirtualizedSingleMarkdown) {
                             DetailContentReveal(
                                 revealKey = "${message.id}:$selectedLiveIndex",
@@ -384,6 +408,14 @@ internal fun SegmentDetailSheet(
                                                 color = MaterialTheme.colorScheme.primary,
                                                 modifier = Modifier.padding(horizontal = 24.dp),
                                             )
+                                        } else if (usesPlainThoughtDetail(detailSeg.type, false)) {
+                                            val detailIsStreaming =
+                                                isStreaming && index == selectedSegs.lastIndex
+                                            ThoughtDetailEmbeddedChunks(
+                                                content = detailSeg.content,
+                                                isStreaming = detailIsStreaming,
+                                                modifier = Modifier.padding(horizontal = 24.dp),
+                                            )
                                         } else {
                                             val detailIsStreaming =
                                                 isStreaming && index == selectedSegs.lastIndex
@@ -445,6 +477,13 @@ internal fun SegmentDetailSheet(
                                         text = seg.content,
                                         style = markdownRenderContext.plainTextStyle,
                                         color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(horizontal = 24.dp),
+                                    )
+                                } else if (usesPlainThoughtDetail(seg.type, directMarkdownContent != null)) {
+                                    ThoughtDetailEmbeddedChunks(
+                                        content = seg.content,
+                                        isStreaming = isStreaming,
+                                        emptyStreamingText = emptyStreamingText,
                                         modifier = Modifier.padding(horizontal = 24.dp),
                                     )
                                 } else {

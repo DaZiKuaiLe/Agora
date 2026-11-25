@@ -28,3 +28,26 @@ internal fun arg(args: Map<String, JsonElement>, key: String): String {
 
 internal fun boolArg(args: Map<String, JsonElement>, key: String): Boolean =
     (args[key] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() == true
+
+internal fun intArg(args: Map<String, JsonElement>, key: String): Int? =
+    (args[key] as? JsonPrimitive)?.content?.toIntOrNull()
+
+internal fun intSetArg(args: Map<String, JsonElement>, key: String): Set<Int>? {
+    val element = args[key] ?: return null
+    return when (element) {
+        is kotlinx.serialization.json.JsonArray ->
+            element.mapNotNull { (it as? JsonPrimitive)?.content?.toIntOrNull() }.toSet()
+        is JsonPrimitive -> element.content.toIntOrNull()?.let { setOf(it) }
+        else -> null
+    }
+}
+
+internal fun stringListArg(args: Map<String, JsonElement>, key: String): List<String> {
+    val element = args[key] ?: return emptyList()
+    return when (element) {
+        is kotlinx.serialization.json.JsonArray ->
+            element.mapNotNull { (it as? JsonPrimitive)?.content?.trim()?.takeIf { name -> name.isNotEmpty() } }
+        is JsonPrimitive -> element.content.trim().takeIf { it.isNotEmpty() }?.let { listOf(it) }.orEmpty()
+        else -> emptyList()
+    }
+}

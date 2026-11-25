@@ -10,6 +10,7 @@ import com.newoether.agora.api.util.prepareMessages
 import com.newoether.agora.api.util.assembleText
 import com.newoether.agora.data.repository.SettingsRepository
 import com.newoether.agora.model.ChatMessage
+import com.newoether.agora.model.ContextBudget
 import com.newoether.agora.model.Participant
 import com.newoether.agora.model.TokenUsage
 import com.newoether.agora.util.Constants
@@ -205,7 +206,11 @@ class LocalProvider(
             val parts = message.removePrefix(CONTEXT_EXCEEDED_PREFIX).split(":")
             val promptTokens = parts.getOrNull(0)?.toIntOrNull() ?: 0
             val contextTokens = parts.getOrNull(1)?.toIntOrNull() ?: model.nCtx
-            return context.getString(R.string.local_context_exceeded, promptTokens, contextTokens)
+            return context.getString(
+                R.string.local_context_exceeded,
+                ContextBudget.groupedLabel(promptTokens),
+                ContextBudget.groupedLabel(contextTokens),
+            )
         }
         return "Generation failed: $message"
     }

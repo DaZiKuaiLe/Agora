@@ -66,6 +66,20 @@ class QueuedGuidanceMergeTest {
         assertEquals(listOf(first, second), store.queuedSends.value)
     }
 
+    @Test
+    fun claimKeepsProcessCompletionNoticesOutOfOrdinaryUserBatches() {
+        val store = GuidanceLeaseStore()
+        val notice = queued("bgproc_one", "process done")
+        val user = queued("user", "hello")
+        store.enqueue(notice)
+        store.enqueue(user)
+
+        val first = checkNotNull(store.claim())
+        assertEquals(listOf("bgproc_one"), first.batch.map { it.id })
+        val second = checkNotNull(store.claim())
+        assertEquals(listOf("user"), second.batch.map { it.id })
+    }
+
     private fun queued(id: String, text: String) = QueuedSend(
         id = id,
         text = text,

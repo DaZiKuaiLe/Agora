@@ -7,6 +7,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,12 +27,23 @@ internal class ConversationInteractionState internal constructor(
     initialSearchActive: Boolean = false,
     initialSearchQuery: String = "",
     initialSearchMatchIndex: Int = -1,
+    initialJumpIdActive: Boolean = false,
+    initialJumpIdQuery: String = "",
 ) {
     var searchActive by mutableStateOf(initialSearchActive)
         private set
     var searchQuery by mutableStateOf(initialSearchQuery)
         private set
     var searchMatchIndex by mutableIntStateOf(initialSearchMatchIndex)
+        private set
+    var jumpIdActive by mutableStateOf(initialJumpIdActive)
+        private set
+    var jumpIdQuery by mutableStateOf(initialJumpIdQuery)
+        private set
+    /** Non-null while MessageList should teleport to this message id. */
+    var pendingJumpMessageId by mutableStateOf<String?>(null)
+        private set
+    var pendingJumpToken by mutableLongStateOf(0L)
         private set
     var shareSelectionActive by mutableStateOf(false)
         private set
@@ -42,6 +54,9 @@ internal class ConversationInteractionState internal constructor(
         searchActive = false
         searchQuery = ""
         searchMatchIndex = -1
+        jumpIdActive = false
+        jumpIdQuery = ""
+        pendingJumpMessageId = null
         shareSelectionActive = false
         selectedShareMessageIds = emptySet()
     }
@@ -78,13 +93,44 @@ internal class ConversationInteractionState internal constructor(
     }
 
     internal fun activateSearch() {
+        dismissJumpId()
         shareSelectionActive = false
         selectedShareMessageIds = emptySet()
         searchActive = true
     }
 
+    internal fun updateJumpIdQuery(query: String) {
+        jumpIdQuery = query
+    }
+
+    internal fun dismissJumpId() {
+        jumpIdActive = false
+        jumpIdQuery = ""
+    }
+
+    internal fun activateJumpId() {
+        dismissSearch()
+        shareSelectionActive = false
+        selectedShareMessageIds = emptySet()
+        jumpIdActive = true
+    }
+
+    /** Ask MessageList to teleport so the message start sits on the padded content midline. */
+    internal fun requestJumpToMessage(messageId: String) {
+        val id = messageId.trim()
+        if (id.isEmpty()) return
+        pendingJumpMessageId = id
+        pendingJumpToken =
+            if (pendingJumpToken == Long.MAX_VALUE) 1L else pendingJumpToken + 1L
+    }
+
+    internal fun consumeJumpToMessage() {
+        pendingJumpMessageId = null
+    }
+
     internal fun activateShareSelection() {
         dismissSearch()
+        dismissJumpId()
         selectedShareMessageIds = emptySet()
         shareSelectionActive = true
     }
@@ -126,7 +172,11 @@ internal class ConversationInteractionState internal constructor(
         listState: LazyListState,
     ): ConversationInteractionProjection {
         val messagesForSearchAndSelection =
-            if (searchActive || shareSelectionActive) messages.value else emptyList()
+            if (searchActive || jumpIdActive || shareSelectionActive) {
+                messages.value
+            } else {
+                emptyList()
+            }
         val selectableShareMessageIds = remember(messagesForSearchAndSelection) {
             messagesForSearchAndSelection.mapTo(linkedSetOf()) { it.id }
         }
@@ -212,11 +262,20 @@ internal class ConversationInteractionState internal constructor(
 
     companion object {
         val Saver = listSaver<ConversationInteractionState, Any>(
-            save = { state -> listOf(state.searchActive, state.searchQuery) },
+            save = { state ->
+                listOf(
+                    state.searchActive,
+                    state.searchQuery,
+                    state.jumpIdActive,
+                    state.jumpIdQuery,
+                )
+            },
             restore = { restored ->
                 ConversationInteractionState(
                     initialSearchActive = restored[0] as Boolean,
                     initialSearchQuery = restored[1] as String,
+                    initialJumpIdActive = restored.getOrNull(2) as? Boolean ?: false,
+                    initialJumpIdQuery = restored.getOrNull(3) as? String ?: "",
                 )
             },
         )
@@ -233,6 +292,10 @@ internal class ConversationInteractionProjection internal constructor(
     val searchActive: Boolean get() = state.searchActive
     val searchQuery: String get() = state.searchQuery
     val searchMatchIndex: Int get() = state.searchMatchIndex
+    val jumpIdActive: Boolean get() = state.jumpIdActive
+    val jumpIdQuery: String get() = state.jumpIdQuery
+    val pendingJumpMessageId: String? get() = state.pendingJumpMessageId
+    val pendingJumpToken: Long get() = state.pendingJumpToken
     val shareSelectionActive: Boolean get() = state.shareSelectionActive
     val selectedShareMessageIds: Set<String> get() = state.selectedShareMessageIds
 
@@ -249,6 +312,16 @@ internal class ConversationInteractionProjection internal constructor(
 
     fun activateSearch() = state.activateSearch()
 
+    fun updateJumpIdQuery(query: String) = state.updateJumpIdQuery(query)
+
+    fun dismissJumpId() = state.dismissJumpId()
+
+    fun activateJumpId() = state.activateJumpId()
+
+    fun requestJumpToMessage(messageId: String) = state.requestJumpToMessage(messageId)
+
+    fun consumeJumpToMessage() = state.consumeJumpToMessage()
+
     fun activateShareSelection() = state.activateShareSelection()
 
     fun dismissShareSelection() = state.dismissShareSelection()
@@ -263,6 +336,8 @@ internal class ConversationInteractionProjection internal constructor(
         searchMatchDistances[key] = distance
     }
 
+    /** True when the top bar should show an overlay input (search or jump-by-id). */
+    val overlayInputActive: Boolean get() = searchActive || jumpIdActive
 }
 
 @Composable

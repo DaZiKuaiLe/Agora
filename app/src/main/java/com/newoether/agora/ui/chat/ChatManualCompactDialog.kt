@@ -33,30 +33,24 @@ import com.newoether.agora.data.CustomProviderConfig
 import com.newoether.agora.data.modelDisplayName
 import com.newoether.agora.ui.components.clearFocusOnTap
 
-/** Manual Compact uses the same Material alert-dialog treatment as the other chat editors. */
+/** Manual incremental archive compact: model only (prompt and B come from built-in / settings). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ChatManualCompactDialog(
     initialModel: String,
-    initialPrompt: String,
-    initialRetainCount: Int,
     enabledModels: Set<String>,
     modelAliases: Map<String, String>,
     customProviders: List<CustomProviderConfig>,
     isCompacting: Boolean,
-    onCompact: (model: String, prompt: String, retainCount: Int) -> Unit,
+    onCompact: (model: String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var model by remember(initialModel) { mutableStateOf(initialModel) }
-    var prompt by remember(initialPrompt) { mutableStateOf(initialPrompt) }
-    var retain by remember(initialRetainCount) { mutableStateOf(initialRetainCount.toString()) }
     var modelMenu by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var submitting by remember { mutableStateOf(false) }
     val busy = submitting || isCompacting
     val unavailableModelError = stringResource(R.string.context_compact_select_available_model)
-    val emptyPromptError = stringResource(R.string.context_compact_prompt_empty)
-    val invalidRetainError = stringResource(R.string.context_compact_retain_invalid)
 
     LaunchedEffect(isCompacting) {
         if (isCompacting) onDismiss()
@@ -77,65 +71,20 @@ internal fun ChatManualCompactDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                ExposedDropdownMenuBox(
-                    expanded = modelMenu,
-                    onExpandedChange = { if (!busy) modelMenu = it },
-                ) {
-                    OutlinedTextField(
-                        value = modelDisplayName(model, modelAliases, customProviders),
-                        onValueChange = {},
-                        readOnly = true,
-                        enabled = !busy,
-                        singleLine = true,
-                        label = { Text(stringResource(R.string.context_compact_model)) },
-                        trailingIcon = {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelMenu)
-                        },
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .menuAnchor(
-                                type = ExposedDropdownMenuAnchorType.PrimaryNotEditable,
-                                enabled = !busy,
-                            ),
-                    )
-                    ExposedDropdownMenu(
-                        expanded = modelMenu,
-                        onDismissRequest = { modelMenu = false },
-                        shape = CHAT_DROPDOWN_MENU_SHAPE,
-                    ) {
-                        enabledModels.sorted().forEach { candidate ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(modelDisplayName(candidate, modelAliases, customProviders))
-                                },
-                                onClick = {
-                                    model = candidate
-                                    modelMenu = false
-                                    error = null
-                                },
-                            )
-                        }
-                    }
-                }
-                OutlinedTextField(
-                    value = prompt,
-                    onValueChange = { prompt = it; error = null },
-                    label = { Text(stringResource(R.string.context_compact_prompt)) },
-                    enabled = !busy,
-                    minLines = 3,
-                    maxLines = 7,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth(),
+                CompactModelPicker(
+                    model = model,
+                    modelMenu = modelMenu,
+                    enabledModels = enabledModels,
+                    modelAliases = modelAliases,
+                    customProviders = customProviders,
+                    busy = busy,
+                    onModelMenu = { modelMenu = it },
+                    onModel = { model = it; error = null },
                 )
-                OutlinedTextField(
-                    value = retain,
-                    onValueChange = { retain = it.filter(Char::isDigit); error = null },
-                    label = { Text(stringResource(R.string.context_compact_retain)) },
-                    enabled = !busy,
-                    singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth(),
+                Text(
+                    stringResource(R.string.context_compact_batch_size_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 error?.let { message ->
                     Text(
@@ -159,15 +108,12 @@ internal fun ChatManualCompactDialog(
                 enabled = !busy,
                 onClick = {
                     if (submitting || isCompacting) return@TextButton
-                    val count = retain.toIntOrNull()
                     when {
                         model !in enabledModels -> error = unavailableModelError
-                        prompt.isBlank() -> error = emptyPromptError
-                        count == null -> error = invalidRetainError
                         else -> {
                             error = null
                             submitting = true
-                            onCompact(model, prompt, count)
+                            onCompact(model)
                         }
                     }
                 },
@@ -176,4 +122,148 @@ internal fun ChatManualCompactDialog(
             }
         },
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ChatFullContextOptimizeDialog(
+    initialModel: String,
+    enabledModels: Set<String>,
+    modelAliases: Map<String, String>,
+    customProviders: List<CustomProviderConfig>,
+    isCompacting: Boolean,
+    onOptimize: (model: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var model by remember(initialModel) { mutableStateOf(initialModel) }
+    var modelMenu by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var submitting by remember { mutableStateOf(false) }
+    val busy = submitting || isCompacting
+    val unavailableModelError = stringResource(R.string.context_compact_select_available_model)
+
+    LaunchedEffect(isCompacting) {
+        if (isCompacting) onDismiss()
+    }
+
+    AlertDialog(
+        modifier = Modifier.clearFocusOnTap(),
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = {
+            Text(
+                stringResource(R.string.context_full_optimize_title),
+                fontWeight = FontWeight.Bold,
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    stringResource(R.string.context_full_optimize_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                CompactModelPicker(
+                    model = model,
+                    modelMenu = modelMenu,
+                    enabledModels = enabledModels,
+                    modelAliases = modelAliases,
+                    customProviders = customProviders,
+                    busy = busy,
+                    onModelMenu = { modelMenu = it },
+                    onModel = { model = it; error = null },
+                )
+                error?.let { message ->
+                    Text(
+                        message,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !busy,
+            ) {
+                Text(stringResource(R.string.provider_cancel))
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy,
+                onClick = {
+                    if (submitting || isCompacting) return@TextButton
+                    when {
+                        model !in enabledModels -> error = unavailableModelError
+                        else -> {
+                            error = null
+                            submitting = true
+                            onOptimize(model)
+                        }
+                    }
+                },
+            ) {
+                Text(stringResource(R.string.context_full_optimize))
+            }
+        },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CompactModelPicker(
+    model: String,
+    modelMenu: Boolean,
+    enabledModels: Set<String>,
+    modelAliases: Map<String, String>,
+    customProviders: List<CustomProviderConfig>,
+    busy: Boolean,
+    onModelMenu: (Boolean) -> Unit,
+    onModel: (String) -> Unit,
+) {
+    ExposedDropdownMenuBox(
+        expanded = modelMenu,
+        onExpandedChange = { if (!busy) onModelMenu(it) },
+    ) {
+        OutlinedTextField(
+            value = modelDisplayName(model, modelAliases, customProviders),
+            onValueChange = {},
+            readOnly = true,
+            enabled = !busy,
+            singleLine = true,
+            label = { Text(stringResource(R.string.context_compact_model)) },
+            trailingIcon = {
+                ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelMenu)
+            },
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(
+                    type = ExposedDropdownMenuAnchorType.PrimaryNotEditable,
+                    enabled = !busy,
+                ),
+        )
+        ExposedDropdownMenu(
+            expanded = modelMenu,
+            onDismissRequest = { onModelMenu(false) },
+            shape = CHAT_DROPDOWN_MENU_SHAPE,
+        ) {
+            enabledModels.sorted().forEach { candidate ->
+                DropdownMenuItem(
+                    text = {
+                        Text(modelDisplayName(candidate, modelAliases, customProviders))
+                    },
+                    onClick = {
+                        onModel(candidate)
+                        onModelMenu(false)
+                    },
+                )
+            }
+        }
+    }
 }

@@ -168,11 +168,27 @@ private fun StartAnchoredHorizontalOverflowHost(
     content = content,
 )
 
-private enum class CompactSegmentIcon {
+internal enum class CompactSegmentIcon {
     LOADING,
+    PROCESS,
     THINKING,
     TOOL,
     IMAGE,
+}
+
+internal fun compactSegmentHeaderIcon(
+    conversationLoading: Boolean,
+    processRunning: Boolean,
+    isThinking: Boolean,
+    hasThought: Boolean,
+    toolCount: Int,
+    isTranscribingOrImage: Boolean,
+): CompactSegmentIcon = when {
+    conversationLoading -> CompactSegmentIcon.LOADING
+    processRunning -> CompactSegmentIcon.PROCESS
+    !isThinking && !hasThought && toolCount > 0 -> CompactSegmentIcon.TOOL
+    isTranscribingOrImage -> CompactSegmentIcon.IMAGE
+    else -> CompactSegmentIcon.THINKING
 }
 
 internal fun compactSegmentHasActiveContent(
@@ -291,12 +307,14 @@ internal fun CompactSegmentBlock(
         message = message,
         useLiveStatus = useLiveStatus,
     )
-    val collapsedIcon = when {
-        showLoading -> CompactSegmentIcon.LOADING
-        !isThinking && !hasThought && toolCount > 0 -> CompactSegmentIcon.TOOL
-        isTranscribing || collapsedTitle == "Image Transcription" -> CompactSegmentIcon.IMAGE
-        else -> CompactSegmentIcon.THINKING
-    }
+    val collapsedIcon = compactSegmentHeaderIcon(
+        conversationLoading = showLoading,
+        processRunning = ProcessWaitPresentation.processStillRunning(segs),
+        isThinking = isThinking,
+        hasThought = hasThought,
+        toolCount = toolCount,
+        isTranscribingOrImage = isTranscribing || collapsedTitle == "Image Transcription",
+    )
     val expansionTransition = updateTransition(
         targetState = isExpanded,
         label = "compactSegmentExpansion",
@@ -364,7 +382,7 @@ internal fun CompactSegmentBlock(
         }
         val collapsedHeaderWidth =
             12.dp + 18.dp + 8.dp + titleWidth + 4.dp + 18.dp + 12.dp +
-                THINKING_COLLAPSED_WIDTH_ALLOWANCE_DP.dp
+                (THINKING_COLLAPSED_WIDTH_ALLOWANCE_DP + ProcessWaitPresentation.countdownWidthAllowanceDp(segs)).dp
         val availableWidth = if (maxWidth.value.isFinite()) {
             maxWidth + (AUXILIARY_CARD_START_EXTENSION_DP * 2).dp
         } else {
@@ -454,6 +472,11 @@ internal fun CompactSegmentBlock(
                             color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
                             strokeWidth = 2.dp,
                         )
+                        CompactSegmentIcon.PROCESS -> CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                            strokeWidth = 2.dp,
+                        )
                         CompactSegmentIcon.TOOL -> Icon(
                             Icons.Default.Build,
                             null,
@@ -494,6 +517,7 @@ internal fun CompactSegmentBlock(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                ProcessWaitCountdownLabel(segs)
                 Spacer(modifier = Modifier.width(26.dp))
             }
             Box(modifier = Modifier.fillMaxWidth()) {
@@ -567,32 +591,44 @@ internal fun CompactSegmentBlock(
                                 }
                             }
                         } else if (seg.type == "tool") {
-                            Column(
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(18.dp))
                                     .clickable {
                                         onSegmentClick(segmentIndices.getOrElse(idx) { idx })
                                     }
-                                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
                             ) {
-                                Text(
-                                    toolDisplayName(seg),
-                                    style = ChatType.meta,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                StableStreamingText(
-                                    text = toolSummary(seg),
-                                    streaming =
-                                        isStreaming &&
-                                            useLiveStatus &&
-                                            idx == segs.lastIndex,
-                                    style = ChatType.metaNormal,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                if (ProcessWaitPresentation.processStillRunning(seg)) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                                        strokeWidth = 2.dp,
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        toolDisplayName(seg),
+                                        style = ChatType.meta,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    StableStreamingText(
+                                        text = toolSummary(seg),
+                                        streaming =
+                                            isStreaming &&
+                                                useLiveStatus &&
+                                                idx == segs.lastIndex,
+                                        style = ChatType.metaNormal,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                ProcessWaitCountdownLabel(listOf(seg))
                             }
                         }
                         if (idx < segs.lastIndex) {
@@ -883,7 +919,13 @@ internal fun TimelineInfoSegmentCard(
         ) {
             val isTool = seg.type == "tool"
             val isTranscription = seg.type == "transcription"
-            if (isTool) {
+            if (isTool && ProcessWaitPresentation.processStillRunning(seg)) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    color = iconTint,
+                    strokeWidth = 2.dp,
+                )
+            } else if (isTool) {
                 Icon(Icons.Default.Build, null, modifier = Modifier.size(16.dp), tint = iconTint)
             } else if (isTranscription) {
                 Icon(Icons.Filled.Image, null, modifier = Modifier.size(16.dp), tint = iconTint)
@@ -928,6 +970,7 @@ internal fun TimelineInfoSegmentCard(
                     }
                 }
             }
+            ProcessWaitCountdownLabel(listOf(seg))
             Icon(
                 Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 null,
@@ -938,42 +981,4 @@ internal fun TimelineInfoSegmentCard(
         }
         }
     }
-}
-
-private const val STREAMING_THOUGHT_PREVIEW_CODE_POINTS = 60
-
-private fun thoughtPreviewTail(
-    content: AnnotatedString,
-    maximumCodePoints: Int = STREAMING_THOUGHT_PREVIEW_CODE_POINTS,
-): AnnotatedString {
-    if (content.isEmpty() || maximumCodePoints <= 0) return content
-    val raw = content.text
-    val codePointCount = raw.codePointCount(0, raw.length)
-    if (codePointCount <= maximumCodePoints) return content
-    val start = raw.offsetByCodePoints(0, codePointCount - maximumCodePoints)
-    return AnnotatedString.Builder().apply {
-        append("…")
-        append(content.subSequence(start, content.length))
-    }.toAnnotatedString()
-}
-
-@Composable
-private fun StreamingThoughtPreviewText(
-    content: String,
-    streaming: Boolean,
-) {
-    val color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-    val flat = remember(content) { content.replace('\n', ' ') }
-    val annotated = remember(flat) { AnnotatedString(flat) }
-    val preview = remember(annotated, streaming) {
-        if (streaming) thoughtPreviewTail(annotated) else annotated
-    }
-    StableStreamingText(
-        text = preview.text,
-        streaming = streaming,
-        style = ChatType.metaNormal,
-        color = color,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-    )
 }

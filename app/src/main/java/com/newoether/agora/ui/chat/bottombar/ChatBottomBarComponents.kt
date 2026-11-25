@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -18,6 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
@@ -31,6 +33,28 @@ import com.newoether.agora.R
 import com.newoether.agora.ui.theme.ChatType
 
 internal const val CHAT_DROPDOWN_MENU_ICON_SIZE_DP = 24
+
+private val AskModeGreen = Color(0xFF3DDC97)
+
+@Composable
+internal fun AskModeToggle(
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
+    IconButton(
+        onClick = { onToggle(!enabled) },
+        modifier = Modifier
+            .size(32.dp)
+            .clip(RoundedCornerShape(6.dp)),
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.ic_ask_mode),
+            contentDescription = stringResource(R.string.ask_mode),
+            modifier = Modifier.size(16.dp),
+            tint = if (enabled) AskModeGreen else MaterialTheme.colorScheme.primary,
+        )
+    }
+}
 
 fun Modifier.verticalScrollbar(
     scrollState: ScrollState,

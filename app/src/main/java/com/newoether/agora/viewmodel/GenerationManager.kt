@@ -2,8 +2,10 @@ package com.newoether.agora.viewmodel
 
 import android.app.Application
 import com.newoether.agora.util.DebugLog
+import com.newoether.agora.api.ApiResponseCapture
 import com.newoether.agora.api.LlmProvider
 import com.newoether.agora.api.StreamEvent
+import com.newoether.agora.data.ApiResponseArchive
 import com.newoether.agora.data.CustomProviderConfig
 import com.newoether.agora.data.MemoryManager
 import com.newoether.agora.data.SkillManager
@@ -43,10 +45,13 @@ class GenerationManager(
     private val customProviders: () -> List<CustomProviderConfig> = { emptyList() },
 ) {
     var onMessagePersisted: ((messageId: String, text: String) -> Unit)? = null
+    var onTurnCompleted: ((conversationId: String) -> Unit)? = null
 
     /** User-confirmation gate for remote shell mutations. Set by the ViewModel.
      *  Returns true to proceed, false to deny. */
     var onConfirmShellCommand: (suspend (server: String, summary: String) -> Boolean)? = null
+    var onRequestAllFilesAccess: (suspend (reason: String?) -> AllFilesAccessController.Outcome)? = null
+    var onSshShellDetected: ((deviceId: String, detected: String) -> Unit)? = null
 
     private val toolExecutor = GenerationToolExecutor.createDefault(
         app = app,
@@ -58,12 +63,25 @@ class GenerationManager(
         confirmShellCommand = { server, summary ->
             onConfirmShellCommand?.invoke(server, summary) ?: true
         },
+        requestAllFilesAccess = { reason ->
+            onRequestAllFilesAccess?.invoke(reason) ?: AllFilesAccessController.Outcome.UNAVAILABLE
+        },
+        persistSshDetectedShell = { deviceId, detected ->
+            onSshShellDetected?.invoke(deviceId, detected)
+        },
     )
+
+    internal fun toolExecutorDetailStore() = toolExecutor.detailStore
     private val providerPassEffects = ProviderPassEffectExecutor()
     private val toolBatchEffects = GenerationToolBatchEffectExecutor(toolExecutor)
     private val toolRoundBuilder = GenerationToolRoundBuilder()
     private val runFinalizationExecutor = GenerationRunFinalizationExecutor(conversations)
-    private val apiPathBuilder = GenerationApiPathBuilder(conversations, toolExecutor)
+    private val apiPathBuilder = GenerationApiPathBuilder(
+        conversations = conversations,
+        toolDefinitions = toolExecutor,
+        detailStore = toolExecutor.detailStore,
+        appContext = context,
+    )
     private val completionEffects = GenerationCompletionEffectsExecutor(
         isAppInForeground = { AppForegroundTracker.isInForeground },
         releaseForegroundLease = AgoraForegroundService::release,
@@ -130,6 +148,7 @@ class GenerationManager(
         // Set when this Run reaches a tool-round boundary with guidance waiting for a fresh Run.
         var endedAtGuidanceBoundary = false
         var endedForFollowUp = false
+        var endedAtCooperativeStop = false
         var followUpParentMessageId: String? = null
         var totalText = ""
         var totalThoughts = ""
@@ -140,6 +159,7 @@ class GenerationManager(
         val tokenUsageAccumulator = RequestTokenUsageAccumulator()
         val thoughtTiming = GenerationThoughtTiming()
         var currentStatus = MessageStatus.SENDING
+        var lastStopReason: String? = null
         var generationErrorMessage: String? = null
         var retryText: String? = null
         val toolOverlay = GenerationToolOverlay(toolExecutor, config.providerName)
@@ -187,9 +207,8 @@ class GenerationManager(
             // controller before this coroutine runs — GenerationManager no longer touches it.
             com.newoether.agora.util.CrashReporter.note("generate provider=${config.providerName}")
             thinkingPlaceholder = context.getString(R.string.thinking_ellipsis)
-            val loadedMessages = conversations.getMessagesForConversationSnapshot(conversationId)
             val placeholder = checkNotNull(
-                loadedMessages.find { it.id == modelMessageId }
+                conversations.getMessage(modelMessageId)
             ) { "Generation placeholder $modelMessageId does not exist" }
             check(placeholder.runId == runId) {
                 "Generation placeholder $modelMessageId is not owned by Run $runId"
@@ -236,17 +255,15 @@ class GenerationManager(
                     conversationId = conversationId,
                     config = config,
                     context = ctx,
-                    // The transcription stage has just persisted per-attachment metadata. Reload
-                    // that snapshot so only transcribed source images are removed; a global
-                    // image-disable would also discard fresh view_image results in later rounds.
-                    loadedMessages = loadedMessages.takeUnless { transcription.performed },
                 ),
             )
             requestTrace?.mark(
                 "api_path_ready",
                 "messages=${currentPath.size} tools=${rawProviderConfig.tools.orEmpty().size}",
             )
-            val providerConfig = rawProviderConfig
+            val apiResponseCapture = ApiResponseCapture()
+            val providerConfig = rawProviderConfig.copy(apiResponseCapture = apiResponseCapture)
+            var toolRoundResponseBody: String? = null
 
             var toolCallData: ToolCallData? = null
             var toolCallDataList: List<ToolCallData> = emptyList()
@@ -320,18 +337,15 @@ class GenerationManager(
                 thoughtTiming.resetCurrentDuration()
             }
 
-            fun upsertStreamingToolSegment(
-                streamKey: String,
-                toolCallId: String?,
-                name: String,
-                arguments: String,
-                signature: String?,
-            ): Boolean {
-                if (!toolOverlay.hasStream(streamKey)) {
-                    flushAnswerSegment()
-                    flushThoughtSegment()
-                }
-                return toolOverlay.upsert(streamKey, toolCallId, name, arguments, signature)
+            suspend fun honorCooperativeStopBeforeTools(): Boolean {
+                if (completedToolCalls.isEmpty() || callbacks.hasQueuedSends()) return false
+                if (!callbacks.consumeCooperativeStop()) return false
+                // These calls were named by the model but never started. Do not materialize
+                // STOPPED cards — the stop landed before initiation.
+                completedToolCalls.clear()
+                endedAtCooperativeStop = true
+                currentStatus = MessageStatus.STOPPED
+                return true
             }
 
             suspend fun executeAcceptedToolBatch() {
@@ -382,6 +396,16 @@ class GenerationManager(
                 currentStatus = MessageStatus.SENDING
                 publishStreamUpdate(forceCheckpoint = true)
                 uiUpdateGate.recordPublished(System.currentTimeMillis())
+            }
+
+            suspend fun continueAfterProviderPass() {
+                thoughtTiming.finishCurrent()
+                currentStatus = statusAfterThoughtPhaseFinished(currentStatus)
+                flushThoughtSegment()
+                flushAnswerSegment()
+                if (currentStatus != MessageStatus.ERROR && !honorCooperativeStopBeforeTools()) {
+                    executeAcceptedToolBatch()
+                }
             }
 
             suspend fun handleStreamEvent(
@@ -459,6 +483,10 @@ class GenerationManager(
                         retryText = context.getString(R.string.generation_retry_attempt, event.attempt, event.maxAttempts)
                         onStreamUpdate(modelMessage())
                     }
+                    is StreamEvent.Completion -> {
+                        lastStopReason = event.stopReason
+                        return
+                    }
                     is StreamEvent.Error -> {
                         flushThoughtSegment()
                         flushAnswerSegment()
@@ -481,47 +509,11 @@ class GenerationManager(
                             uiUpdateGate.recordPublished(now)
                         }
                     }
-                    is StreamEvent.ToolCallUpdate -> {
-                        val created = upsertStreamingToolSegment(
-                            streamKey = event.streamKey,
-                            toolCallId = event.id,
-                            name = event.name,
-                            arguments = event.arguments,
-                            signature = event.signature,
-                        )
-                        currentStatus = MessageStatus.TOOL_CALLING
-                        retryText = null
-                        val now = System.currentTimeMillis()
-                        if (created || uiUpdateGate.isDue(now)) {
-                            publishStreamUpdate(forceCheckpoint = created)
-                            uiUpdateGate.recordPublished(now)
-                        }
-                    }
-                    is StreamEvent.ToolCallRequest -> {
-                        upsertStreamingToolSegment(
-                            streamKey = event.streamKey,
-                            toolCallId = event.id,
-                            name = event.name,
-                            arguments = event.arguments,
-                            signature = event.signature,
-                        )
-                        currentStatus = MessageStatus.TOOL_CALLING
-                        publishStreamUpdate(forceCheckpoint = true)
-                        uiUpdateGate.recordPublished(System.currentTimeMillis())
-                    }
+                    is StreamEvent.ToolCallUpdate,
+                    is StreamEvent.ToolCallRequest,
                     is StreamEvent.ToolCallsRequest -> {
-                        event.calls.forEach { call ->
-                            upsertStreamingToolSegment(
-                                streamKey = call.streamKey,
-                                toolCallId = call.id,
-                                name = call.name,
-                                arguments = call.arguments,
-                                signature = call.signature,
-                            )
-                        }
-                        currentStatus = MessageStatus.TOOL_CALLING
-                        publishStreamUpdate(forceCheckpoint = true)
-                        uiUpdateGate.recordPublished(System.currentTimeMillis())
+                        // Local tools run serially. Cards appear in overlay.start, not here.
+                        retryText = null
                     }
                 }
 
@@ -531,6 +523,15 @@ class GenerationManager(
                 if (uiUpdateGate.isDue(now) || isSignificant) {
                     publishStreamUpdate(forceCheckpoint = isSignificant)
                     uiUpdateGate.recordPublished(now)
+                }
+            }
+
+            fun rememberApiResponse(outcome: ProviderPassOutcome, body: String) {
+                if (outcome is ProviderPassOutcome.CompletedToolCalls) {
+                    toolRoundResponseBody = body.takeIf { it.isNotEmpty() }
+                } else {
+                    toolRoundResponseBody = null
+                    ApiResponseArchive.write(modelMessageId, body)
                 }
             }
 
@@ -547,8 +548,9 @@ class GenerationManager(
                     pass = pass,
                     effectId = "provider-$pass-${providerRequestOrdinal++}",
                 )
-                try {
-                    return providerPassEffects.execute(
+                apiResponseCapture.clear()
+                return try {
+                    val outcome = providerPassEffects.execute(
                         request = ProviderPassExecutionRequest(
                             proposedIdentity = proposedIdentity,
                             provider = provider,
@@ -566,6 +568,11 @@ class GenerationManager(
                             },
                         ),
                     )
+                    rememberApiResponse(outcome, apiResponseCapture.text())
+                    outcome
+                } catch (error: Exception) {
+                    ApiResponseArchive.write(modelMessageId, apiResponseCapture.text())
+                    throw error
                 } finally {
                     tokenUsageAccumulator.finishRequest()
                     totalTokenUsage = tokenUsageAccumulator.snapshot()
@@ -608,14 +615,13 @@ class GenerationManager(
                 userPrepend = config.userPrepend,
                 userPostpend = config.userPostpend,
                 initialUserPrompt = config.initialUserPrompt,
+                askMode = ctx.askMode,
             )
             requestTrace?.mark("provider_dispatch")
             acceptProviderPass(collectProviderRequest(apiPath) {
                 requestTrace?.mark("first_semantic_event")
             })
-            thoughtTiming.finishCurrent()
-            currentStatus = statusAfterThoughtPhaseFinished(currentStatus)
-            if (currentStatus != MessageStatus.ERROR) executeAcceptedToolBatch()
+            continueAfterProviderPass()
             // Publish the final in-memory snapshot without waiting for another Room round trip.
             // The terminal transaction below persists this exact state after fencing the
             // checkpoint writer, while genuine tool lifecycle boundaries remain forced.
@@ -648,6 +654,10 @@ class GenerationManager(
                     calls = tcds,
                     completedSegments = txedSegments,
                 )
+                toolRoundResponseBody?.let { body ->
+                    ApiResponseArchive.write(round.pathMessages.first().id, body)
+                    toolRoundResponseBody = null
+                }
                 toolPath = toolPath + round.pathMessages
                 toolRoundEffects.commitRound { commitIdentity ->
                     conversations.appendToolRoundToRun(
@@ -684,7 +694,13 @@ class GenerationManager(
                 // clean: slot release drains the complete FIFO batch into one merged USER message,
                 // and the new generation continues from those durable tool results.
                 if (callbacks.hasQueuedSends()) {
+                    callbacks.consumeCooperativeStop()
                     endedAtGuidanceBoundary = true
+                    break
+                }
+                if (callbacks.consumeCooperativeStop()) {
+                    endedAtCooperativeStop = true
+                    currentStatus = MessageStatus.STOPPED
                     break
                 }
 
@@ -695,32 +711,55 @@ class GenerationManager(
                     includeImages = providerConfig.includeImages,
                     userPrepend = config.userPrepend,
                     userPostpend = config.userPostpend,
+                    askMode = ctx.askMode,
                 )
                 acceptProviderPass(collectProviderRequest(apiToolPath))
-                thoughtTiming.finishCurrent()
-                currentStatus = statusAfterThoughtPhaseFinished(currentStatus)
-                if (currentStatus != MessageStatus.ERROR) executeAcceptedToolBatch()
+                continueAfterProviderPass()
                 // Publish the round's final UI state immediately. The next loop boundary or the
                 // terminal transaction supplies durability, so blocking here would only duplicate
                 // I/O and visibly delay the transition out of generating.
                 publishStreamUpdate()
             }
 
-            if (!currentCoroutineContext().isActive) {
-                currentStatus = MessageStatus.STOPPED
-            }
-
+            val thoughtOnlyCompletion = isThoughtOnlyVendorCompletion(
+                answer = totalText,
+                thoughts = totalThoughts,
+                thinkingPlaceholder = thinkingPlaceholder,
+                hasImages = generatedImages.isNotEmpty(),
+                endedAtGuidanceBoundary = endedAtGuidanceBoundary,
+                endedForFollowUp = endedForFollowUp,
+                endedAtCooperativeStop = endedAtCooperativeStop,
+                providerAlreadyFailed = currentStatus == MessageStatus.ERROR,
+                jobCancelled = generationJob?.isCancelled == true,
+                coroutineInactive = !currentCoroutineContext().isActive,
+            )
             if (currentStatus != MessageStatus.ERROR) {
-                // A queue-steered interruption is a SUCCESSFUL turn even with no answer text —
-                // its value is the persisted tool activity.
-                currentStatus = if (
-                    totalText.isNotEmpty() ||
-                    totalThoughts.isNotEmpty() ||
-                    endedAtGuidanceBoundary ||
-                    endedForFollowUp
-                ) {
-                    MessageStatus.SUCCESS
-                } else MessageStatus.ERROR
+                currentStatus = generationLoopExitStatus(
+                    currentStatus = currentStatus,
+                    endedAtCooperativeStop = endedAtCooperativeStop,
+                    coroutineInactive = !currentCoroutineContext().isActive,
+                    hasSuccessfulTurnContent = totalText.isNotEmpty() ||
+                        generatedImages.isNotEmpty() ||
+                        (totalThoughts.isNotEmpty() && !thoughtOnlyCompletion) ||
+                        endedAtGuidanceBoundary ||
+                        endedForFollowUp,
+                    jobCancelled = generationJob?.isCancelled == true,
+                )
+            }
+            if (thoughtOnlyCompletion) {
+                val reason = lastStopReason?.takeIf { it.isNotBlank() }
+                generationErrorMessage = if (reason != null) {
+                    context.getString(
+                        R.string.generation_error_thought_only,
+                        config.providerName,
+                        reason,
+                    )
+                } else {
+                    context.getString(
+                        R.string.generation_error_thought_only_no_reason,
+                        config.providerName,
+                    )
+                }
             }
             generationErrorMessage = terminalGenerationErrorMessage(
                 status = currentStatus,
@@ -748,6 +787,9 @@ class GenerationManager(
                     "Error: ${e.localizedMessage ?: "An unexpected error occurred."}"
             }
         } finally {
+            if (!endedAtCooperativeStop) {
+                callbacks.consumeCooperativeStop()
+            }
             // Fence the asynchronous checkpoint lane before any terminal transaction. Without
             // this join, an older SENDING snapshot could finish after SUCCESS/STOPPED and revive
             // the exact UI state the terminal write just closed.
@@ -849,6 +891,9 @@ class GenerationManager(
                 ),
                 callbacks = callbacks.completionEffectsCallbacks(onMessagePersisted),
             )
+            if (terminalPersisted && currentStatus == MessageStatus.SUCCESS) {
+                onTurnCompleted?.invoke(conversationId)
+            }
         }
         GenerationExecutionResult(
             followUpParentMessageId = followUpParentMessageId,

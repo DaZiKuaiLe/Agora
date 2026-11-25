@@ -1,6 +1,20 @@
 # Context Compact requirements
 
-Status: authoritative product baseline, updated 2026-08-13.
+Status: **superseded**, 2026-08-28.
+
+This document described the legacy “single capsule + verbatim suffix” Compact model.
+The authoritative redesign is:
+
+**[`context-compact-turn-archive.md`](./context-compact-turn-archive.md)**  
+（按轮归档：预压缩、锁定、`turnId` 细节库、内置提示词）
+
+Keep this file only as historical reference until the legacy capsule path is removed from code.
+
+---
+
+## Legacy text below (historical)
+
+Status was: authoritative product baseline, updated 2026-08-13.
 
 The global message-generation, fresh-Run, UI-boundary, and Provider context-boundary contracts are
 owned by `development/message-generation.md`. This document defines Compact product behavior and

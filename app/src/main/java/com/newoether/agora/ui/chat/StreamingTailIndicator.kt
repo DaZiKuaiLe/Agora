@@ -67,8 +67,9 @@ internal fun streamingTailAvailability(
     generationActive: Boolean,
     blocked: Boolean,
     programmaticHandoff: Boolean,
+    onLastPage: Boolean = true,
 ): StreamingTailAvailability = when {
-    !generationActive || blocked -> StreamingTailAvailability(
+    !generationActive || blocked || !onLastPage -> StreamingTailAvailability(
         enabled = false,
         paused = false,
     )

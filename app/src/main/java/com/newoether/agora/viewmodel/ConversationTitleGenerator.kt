@@ -64,21 +64,45 @@ class ConversationTitleGenerator(
 
         val conversation = conversations.getConversation(conversationId)
             ?: return Result.Failure("Conversation not found")
-        val snapshot = conversations.getMessagesForConversationSnapshot(conversationId)
-        val path = ConversationUiState.resolvePath(
-            allMessages = projectProviderMessages(
-                entities = snapshot,
-                includeStoredTranscriptions = true,
-            ),
-            streamingMsg = null,
-            selectedChildren = conversations.restoreBranchSelections(conversationId),
+        val graph = conversations.getCompactMessageGraph(conversationId)
+        val path = selectedVisiblePath(
+            graph,
+            conversations.restoreBranchSelections(conversationId),
         )
-        val firstUser = path.firstOrNull {
-            it.participant == Participant.USER && titleSourceText(it).isNotBlank()
-        } ?: return Result.Failure("Conversation has no user message")
-        val firstModel = path.firstOrNull {
-            it.participant == Participant.MODEL && it.text.isNotBlank()
+        var firstUser: ChatMessage? = null
+        var firstModel: ChatMessage? = null
+        for (stub in path) {
+            if (
+                stub.id.startsWith(Constants.TOOL_MSG_PREFIX) ||
+                stub.id.startsWith(Constants.RESULT_MSG_PREFIX) ||
+                stub.id.startsWith(Constants.COMPACT_MSG_PREFIX) ||
+                stub.id.startsWith(Constants.PROCESS_NOTICE_MSG_PREFIX)
+            ) {
+                continue
+            }
+            val entity = conversations.getMessage(stub.id) ?: continue
+            val message = projectHydratedEntities(
+                listOf(entity),
+                includeStoredTranscriptions = true,
+            ).singleOrNull() ?: continue
+            if (
+                firstUser == null &&
+                message.participant == Participant.USER &&
+                titleSourceText(message).isNotBlank()
+            ) {
+                firstUser = message
+            }
+            if (
+                firstModel == null &&
+                message.participant == Participant.MODEL &&
+                message.text.isNotBlank()
+            ) {
+                firstModel = message
+            }
+            if (firstUser != null && firstModel != null) break
         }
+        val resolvedUser = firstUser
+            ?: return Result.Failure("Conversation has no user message")
 
         val configuredTitleModel = settings.titleGenerationModel.value
         val prefixedModelId = configuredTitleModel?.takeIf { it.isNotBlank() }
@@ -94,7 +118,7 @@ class ConversationTitleGenerator(
             return Result.Failure("Provider not configured: $providerName")
         }
 
-        val firstUserSource = titleSourceText(firstUser)
+        val firstUserSource = titleSourceText(resolvedUser)
         val summary = if (firstModel != null) {
             "User: $firstUserSource\nAssistant: ${firstModel.text.take(500)}"
         } else {

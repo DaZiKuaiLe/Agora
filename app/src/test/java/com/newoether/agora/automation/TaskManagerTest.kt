@@ -1,13 +1,17 @@
 package com.newoether.agora.automation
 
+import com.newoether.agora.data.local.ExecutionMessagePreview
 import com.newoether.agora.data.local.TaskEntity
 import com.newoether.agora.data.repository.ConversationRepository
 import com.newoether.agora.data.repository.TaskRepository
+import com.newoether.agora.model.ChatConversation
+import com.newoether.agora.model.MessageStatus
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -73,6 +77,40 @@ class TaskManagerTest {
         val deferred = result as TaskManager.ExecutionResult.Deferred
         assertEquals("execution", deferred.conversationId)
         assertEquals("Conversation is already generating", deferred.reason)
+    }
+
+    @Test
+    fun executionSummariesJoinConversationRowsToLastPreviews() = runTest {
+        val repository = mockk<TaskRepository>()
+        val conversations = mockk<ConversationRepository>()
+        every { repository.getAllTasks() } returns MutableStateFlow(emptyList())
+        val execution = ChatConversation(id = "exec", title = "Run", taskId = "task")
+        every { conversations.getExecutionsForTask("task") } returns
+            MutableStateFlow(listOf(execution))
+        every { conversations.observeExecutionPreviewsForTask("task") } returns MutableStateFlow(
+            listOf(
+                ExecutionMessagePreview(
+                    conversationId = "exec",
+                    text = "done",
+                    status = MessageStatus.SUCCESS,
+                    timestamp = 9L,
+                ),
+                ExecutionMessagePreview(
+                    conversationId = "other",
+                    text = "ignored",
+                    status = MessageStatus.ERROR,
+                    timestamp = 1L,
+                ),
+            ),
+        )
+        val manager = TaskManager(repository, conversations, mockk(), backgroundScope)
+
+        val summaries = manager.executionSummariesForTask("task").first()
+
+        assertEquals(1, summaries.size)
+        assertEquals("done", summaries.single().preview)
+        assertEquals(MessageStatus.SUCCESS, summaries.single().status)
+        assertEquals(9L, summaries.single().timestamp)
     }
 
     private fun task(

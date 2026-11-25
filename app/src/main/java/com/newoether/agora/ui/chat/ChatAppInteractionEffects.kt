@@ -387,12 +387,13 @@ internal fun answeringHapticEligible(
 
 @Composable
 internal fun AnsweringHapticEffect(
-    generationSnapshot: com.newoether.agora.viewmodel.ConversationGenerationSnapshot,
+    viewModel: com.newoether.agora.viewmodel.ChatViewModel,
     currentConversationId: String?,
     topLevelPresentation: com.newoether.agora.TopLevelPresentation,
     hapticsEnabled: Boolean,
     haptics: com.newoether.agora.ui.common.AgoraHaptics,
 ) {
+    val generationSnapshot by viewModel.generationSnapshot.collectAsState()
     val answeringHapticActive = answeringHapticEligible(
         generationSnapshot,
         currentConversationId,

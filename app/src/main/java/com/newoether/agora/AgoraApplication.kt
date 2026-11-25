@@ -4,7 +4,10 @@ import android.app.Application
 import com.newoether.agora.data.local.ChatDatabase
 import com.newoether.agora.di.AppContainer
 import com.newoether.agora.util.CrashReporter
+import com.newoether.agora.api.util.installDebugWireCapPersistence
+import com.newoether.agora.data.ApiResponseArchive
 import com.newoether.agora.util.DebugLog
+import com.newoether.agora.util.SshJschConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -58,6 +61,9 @@ class AgoraApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashReporter.install(this)
+        installDebugWireCapPersistence(filesDir)
+        ApiResponseArchive.install(filesDir)
+        SshJschConfig.apply()
         startupScope.launch {
             startupGate.initialize()
         }

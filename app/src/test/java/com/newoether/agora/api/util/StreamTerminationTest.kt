@@ -172,4 +172,9 @@ class StreamTerminationTest {
 
         assertNull(result.toError("Anthropic"))
     }
+
+    @Test
+    fun completionEvent_doesNotCountAsModelOutput() {
+        assertFalse(StreamEvent.Completion(stopReason = "stop").carriesModelOutput())
+    }
 }

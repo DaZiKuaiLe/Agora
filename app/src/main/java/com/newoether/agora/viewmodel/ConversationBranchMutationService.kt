@@ -1,7 +1,8 @@
 package com.newoether.agora.viewmodel
 
 import com.newoether.agora.automation.ConversationExecutionCoordinator
-import com.newoether.agora.data.local.MessageEntity
+import com.newoether.agora.data.ApiResponseArchive
+import com.newoether.agora.data.local.CompactMessageGraphRow
 import com.newoether.agora.data.repository.ConversationRepository
 import com.newoether.agora.model.ChatMessage
 import com.newoether.agora.util.Constants
@@ -17,7 +18,6 @@ internal class ConversationBranchMutationService(
     private val scope: CoroutineScope,
     private val conversations: ConversationRepository,
     private val executionCoordinator: ConversationExecutionCoordinator,
-    private val toUiMessage: (MessageEntity) -> ChatMessage,
     private val isConversationOpen: (String) -> Boolean,
     private val projectGraph: (List<ChatMessage>, Map<String?, String>) -> Unit,
     private val onMutationStart: suspend (scrollToTarget: Boolean) -> Long?,
@@ -51,9 +51,12 @@ internal class ConversationBranchMutationService(
                         if (conversations.getLiveRun(conversationId) != null) return@lock
                         if (compactOnly) {
                             check(conversations.removeContextCompact(messageId))
-                            val remaining =
-                                conversations.getMessagesForConversationSnapshot(conversationId)
-                            val remainingChatMessages = remaining.map(toUiMessage)
+                            val remainingGraph =
+                                conversations.getCompactMessageGraph(conversationId)
+                            val remainingChatMessages = projectRemainingMessages(
+                                graph = remainingGraph,
+                                deletedIds = setOf(messageId),
+                            )
                             val selections = conversations.restoreBranchSelections(conversationId)
                             if (isConversationOpen(conversationId)) {
                                 projectGraph(remainingChatMessages, selections)
@@ -64,23 +67,22 @@ internal class ConversationBranchMutationService(
                         }
 
                         val runs = conversations.getRunsForConversationSnapshot(conversationId)
-                        val allMessages =
-                            conversations.getMessagesForConversationSnapshot(conversationId)
-                        val allChatMessages = allMessages.map(toUiMessage)
+                        val graph = conversations.getCompactMessageGraph(conversationId)
+                        val identityMessages = graph.map { it.toStubMessageEntity() }
                         val previousSelected =
                             conversations.restoreBranchSelections(conversationId)
                         val previousRunSelections =
                             conversations.restoreRunBranchSelections(conversationId)
                         val plan = BranchDeletionPlanner.plan(
                             rootMessageId = messageId,
-                            messages = allMessages,
+                            messages = identityMessages,
                             runs = runs,
                             messageSelections = previousSelected,
                             runSelections = previousRunSelections,
                         )
-                        val staleList = allMessages.filter { it.id in plan.deletedMessageIds }
-                        val remainingMessages =
-                            allMessages.filter { it.id !in plan.deletedMessageIds }
+                        val staleRefs = conversations.getMessageAttachmentReferencesByIds(
+                            plan.deletedMessageIds.toList(),
+                        )
                         check(
                             conversations.deleteMessageSubtree(
                                 conversationId = conversationId,
@@ -93,15 +95,19 @@ internal class ConversationBranchMutationService(
                         ) { "Message $messageId disappeared during delete" }
 
                         // Files are external to Room, so remove them only after graph commit.
-                        conversations.deleteMessageFiles(staleList)
-                        val remainingChatMessages = remainingMessages.map(toUiMessage)
+                        conversations.deleteMessageAttachmentFiles(staleRefs)
+                        ApiResponseArchive.delete(plan.deletedMessageIds)
+                        val remainingChatMessages = projectRemainingMessages(
+                            graph = graph,
+                            deletedIds = plan.deletedMessageIds,
+                        )
                         val remainingPath = ConversationUiState.resolvePath(
                             allMessages = remainingChatMessages,
                             streamingMsg = null,
                             selectedChildren = plan.messageSelections,
                         )
                         val targetAfterDelete = deleteSettlementTargetMessageId(
-                            messagesBeforeDelete = allChatMessages,
+                            messagesBeforeDelete = snapshot,
                             deletedRootMessageId = messageId,
                             remainingPath = remainingPath,
                         )
@@ -121,6 +127,12 @@ internal class ConversationBranchMutationService(
 
         return previewIds.size
     }
+
+    private fun projectRemainingMessages(
+        graph: List<CompactMessageGraphRow>,
+        deletedIds: Set<String>,
+    ): List<ChatMessage> =
+        graph.filter { it.id !in deletedIds }.map { it.toPathChatMessage() }
 
     private fun structuralDescendantIds(
         messages: List<ChatMessage>,

@@ -1,5 +1,7 @@
 package com.newoether.agora.model
 
+import java.util.Locale
+
 /** Shared storage/UI bounds for the provider-visible conversation token budget. */
 object ContextBudget {
     const val DEFAULT_TOKENS = 32_768
@@ -11,6 +13,12 @@ object ContextBudget {
 
     /** Default compaction trigger used when a model has no per-model `compactThreshold` override. */
     const val DEFAULT_COMPACT_THRESHOLD = 262_144
+
+    /**
+     * Default freeze threshold: when the compact residency reaches this size, later
+     * incremental folds no longer rewrite it. 256K in the compact-label scale.
+     */
+    const val DEFAULT_FREEZE_THRESHOLD = 262_144
 
     val PRESETS = intArrayOf(
         4_096,
@@ -34,6 +42,15 @@ object ContextBudget {
         val migrated = if (value <= 100) value * 1_024 else value
         return migrated.coerceIn(MIN_TOKENS, MAX_TOKENS)
     }
+
+    fun nearestPreset(tokens: Int): Int {
+        val normalized = tokens.coerceIn(MIN_TOKENS, MAX_TOKENS)
+        return PRESETS.minByOrNull { kotlin.math.abs(it - normalized) } ?: DEFAULT_FREEZE_THRESHOLD
+    }
+
+    /** Always uses a comma every three digits (`1,024`), never a locale space or period. */
+    fun groupedLabel(tokens: Int): String =
+        String.format(Locale.US, "%,d", tokens.coerceAtLeast(0))
 
     fun compactLabel(tokens: Int): String {
         // This formats both configured budgets and live occupancy. Live estimates can legally be

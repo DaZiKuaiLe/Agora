@@ -171,7 +171,11 @@ fun splitLogicalContext(messages: List<ChatMessage>, retainLogicalMessages: Int)
  * rows with zero logical-message weight.
  */
 fun canonicalContextMessages(messages: List<ChatMessage>): List<ChatMessage> {
-    val compacted = applyNearestContextCompact(messages)
+    val compacted = applyContextCompression(
+        messages = messages,
+        projectSummaryBatches = pathHasSummaryBatches(messages),
+        retainTurns = 0,
+    )
     val canonical = validateToolMessages(
         stripEmptyTurns(
             projectGenerationStatusesForApi(compacted.distinctBy(ChatMessage::id))
@@ -241,12 +245,8 @@ fun contextWindowRetainedMessageIds(
     return compacted.drop(sourceIndex).mapTo(linkedSetOf(), ChatMessage::id)
 }
 
-fun prepareMessages(messages: List<ChatMessage>, contextTokenBudget: Int): List<ChatMessage> {
-    val canonical = canonicalContextMessages(messages)
-    return stripEmptyTurns(
-        mergeConsecutiveSameRole(limitContext(canonical, contextTokenBudget))
-    )
-}
+fun prepareMessages(messages: List<ChatMessage>, contextTokenBudget: Int): List<ChatMessage> =
+    omitSuppressedDialogueTurns(contextMessagesWithinTurnCap(messages, contextTokenBudget))
 
 internal fun protocolAtomicUnits(messages: List<ChatMessage>): List<List<ChatMessage>> {
     val units = mutableListOf<List<ChatMessage>>()
@@ -474,7 +474,7 @@ fun projectToolResultImagesToUserMessage(
             // round-boundary path rebuild excludes the model message, so the description must
             // travel with the result rows).
             val descriptionBlock = transcriptionDescriptionsForBatch(batch)
-                ?.let { "\n\n--- Image Transcription: view_image ---\n$it" }
+                ?.let { "\n\n--- Image Transcription: read_image ---\n$it" }
                 .orEmpty()
             projected += ChatMessage(
                 // The id must not start with tool_ / result_ / compact_: provider serializers
@@ -552,13 +552,14 @@ fun mergeConsecutiveSameRole(messages: List<ChatMessage>): List<ChatMessage> {
             i++
             continue
         }
-        // Find consecutive messages with the same participant
+        // Same-role merge; never merge context_batch_/context_summary_/context_digest_ payloads.
         var j = i + 1
         while (j < messages.size) {
             val next = messages[j]
             val nextIsTool = next.id.startsWith(Constants.TOOL_MSG_PREFIX) ||
                 next.id.startsWith(Constants.RESULT_MSG_PREFIX)
             if (nextIsTool || next.participant != current.participant) break
+            if (isContextProjectionMessageId(current.id) || isContextProjectionMessageId(next.id)) break
             j++
         }
         if (j == i + 1) {

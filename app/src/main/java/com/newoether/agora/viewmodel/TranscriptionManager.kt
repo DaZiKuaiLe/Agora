@@ -54,14 +54,7 @@ class TranscriptionManager(
         conversationId: String,
         parentId: String?
     ): List<TranscriptionTarget> {
-        val allMessages = conversations.getMessagesForConversationSnapshot(conversationId)
-        val pathMessages = mutableListOf<MessageEntity>()
-        var currentId = parentId
-        while (currentId != null) {
-            val msg = allMessages.find { it.id == currentId } ?: break
-            pathMessages.add(0, msg)
-            currentId = msg.parentId
-        }
+        val pathMessages = loadAncestorMessages(conversationId, parentId)
         val latestUserMsg = pathMessages.lastOrNull { it.participant == Participant.USER }
         val targets = mutableListOf<TranscriptionTarget>()
         for (msg in pathMessages) {
@@ -246,7 +239,7 @@ class TranscriptionManager(
             thinkingEnabled = false,
             baseUrl = baseUrl
         )
-        val placeholder = conversations.getMessagesForConversationSnapshot(conversationId).find { it.id == modelMessageId }
+        val placeholder = conversations.getMessage(modelMessageId)
         val parentId = placeholder?.parentId
         val results = mutableMapOf<String, MutableList<Pair<Int, String>>>()
         val transcriptionSegments = mutableListOf<MessageSegment>()
@@ -313,7 +306,7 @@ class TranscriptionManager(
 
         // Persist results back to message attachment metadata
         for ((messageId, updates) in results) {
-            val entity = conversations.getMessagesForConversationSnapshot(conversationId).find { it.id == messageId }
+            val entity = conversations.getMessage(messageId)
             if (entity != null) {
                 val meta = entity.attachmentMeta?.let {
                     try { Json.decodeFromString<AttachmentMeta>(it) } catch (_: Exception) { null }
@@ -333,5 +326,31 @@ class TranscriptionManager(
             }
         }
         return Pair(transcriptionSegments, null)
+    }
+
+    private suspend fun loadAncestorMessages(
+        conversationId: String,
+        parentId: String?,
+    ): List<MessageEntity> {
+        val graph = conversations.getCompactMessageGraph(conversationId)
+        val ancestorIds = if (graph.isNotEmpty()) {
+            generationAncestorIds(
+                graphById = graph.associateBy { it.id },
+                startId = parentId,
+                stopAtSuccessfulCompact = false,
+            )
+        } else {
+            val ids = ArrayList<String>()
+            val seen = HashSet<String>()
+            var currentId = parentId
+            while (currentId != null && seen.add(currentId)) {
+                ids += currentId
+                currentId = conversations.getMessage(currentId)?.parentId
+            }
+            ids.asReversed()
+        }
+        if (ancestorIds.isEmpty()) return emptyList()
+        val byId = conversations.getMessagesByIds(ancestorIds).associateBy { it.id }
+        return ancestorIds.mapNotNull { byId[it] }
     }
 }

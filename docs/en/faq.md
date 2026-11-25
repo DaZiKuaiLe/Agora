@@ -10,7 +10,7 @@ Secret settings normally use an AES-256-GCM envelope backed by the Android Keyst
 
 ## Which interface languages are available?
 
-System default plus English, Arabic, German, Spanish, French, Japanese, Korean, Brazilian Portuguese, Russian, Vietnamese, Simplified Chinese, and Traditional Chinese. The web manual may fall back to English when a maintained translation is unavailable.
+System default plus English and Simplified Chinese.
 
 ## Why is a model missing?
 
@@ -20,9 +20,9 @@ Open **Settings → Models**, sync providers, and enable the model. Custom model
 
 Compact adds a visible summary boundary without deleting original messages. It is a standard generation: sending during it queues the message, and deleting the capsule restores the preceding boundary while preserving conversation content. See [Context](context.md).
 
-## Is Conch always end-to-end encrypted?
+## Is Conch still supported?
 
-Only when the Conch device has an API key. Authenticated Conch requests use its signed key exchange and encrypted request protocol. A blank-key server accepts plain JSON at the application layer, relying only on HTTPS if its URL uses HTTPS. See [Shell Setup](shell.md).
+No. Conch is deprecated. Configure an SSH device instead. Old backups may still contain Conch fields; Agora ignores them. See [Shell Setup](shell.md).
 
 ## Are local models available in every build?
 

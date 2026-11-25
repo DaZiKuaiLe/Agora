@@ -9,6 +9,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.DropdownMenuItem
@@ -37,6 +38,7 @@ internal fun AttachmentAddMenu(
     onPhotos: () -> Unit,
     onVideos: () -> Unit,
     onFiles: () -> Unit,
+    onPathReference: () -> Unit,
 ) {
     var showAddMenu by remember { mutableStateOf(false) }
     var lastAddDismissTime by remember { mutableLongStateOf(0L) }
@@ -80,6 +82,7 @@ internal fun AttachmentAddMenu(
             AttachmentMenuItem(Icons.Default.Image, R.string.photos) { select(onPhotos) }
             AttachmentMenuItem(Icons.Default.Videocam, R.string.videos) { select(onVideos) }
             AttachmentMenuItem(Icons.Default.AttachFile, R.string.files) { select(onFiles) }
+            AttachmentMenuItem(Icons.Default.Link, R.string.path_reference) { select(onPathReference) }
         }
     }
 }

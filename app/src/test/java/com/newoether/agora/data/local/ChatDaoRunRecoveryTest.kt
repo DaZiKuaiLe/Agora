@@ -31,7 +31,7 @@ class ChatDaoRunRecoveryTest {
         val checkpoint = slot<MessageStreamCheckpoint>()
         coEvery { dao.recoverOrphanedRuns(any()) } coAnswers { callOriginal() }
         coEvery { dao.getOrphanedLiveRuns() } returns listOf(run)
-        coEvery { dao.getMessagesForRuns(listOf(RUN_ID)) } returns listOf(message)
+        coEvery { dao.getInFlightMessagesForRuns(any()) } returns listOf(message)
         coEvery { dao.updateMessageCheckpoint(capture(checkpoint)) } returns 1
         coEvery {
             dao.terminalizeLiveRun(
@@ -59,7 +59,7 @@ class ChatDaoRunRecoveryTest {
         val dao = mockk<ChatDao>()
         coEvery { dao.recoverOrphanedRuns(any()) } coAnswers { callOriginal() }
         coEvery { dao.getOrphanedLiveRuns() } returns listOf(liveRun(RunStatus.STOPPING))
-        coEvery { dao.getMessagesForRuns(listOf(RUN_ID)) } returns emptyList()
+        coEvery { dao.getInFlightMessagesForRuns(any()) } returns emptyList()
         coEvery { dao.terminalizeLiveRun(any(), any(), any(), any()) } returns 0
 
         val failure = runCatching { dao.recoverOrphanedRuns(99L) }.exceptionOrNull()
@@ -84,7 +84,7 @@ class ChatDaoRunRecoveryTest {
         val checkpoint = slot<MessageStreamCheckpoint>()
         coEvery { dao.recoverOrphanedRuns(any()) } coAnswers { callOriginal() }
         coEvery { dao.getOrphanedLiveRuns() } returns listOf(liveRun(RunStatus.ACTIVE))
-        coEvery { dao.getMessagesForRuns(listOf(RUN_ID)) } returns listOf(compact)
+        coEvery { dao.getInFlightMessagesForRuns(any()) } returns listOf(compact)
         coEvery { dao.updateMessageCheckpoint(capture(checkpoint)) } returns 1
         coEvery { dao.terminalizeLiveRun(any(), any(), any(), any()) } returns 1
 

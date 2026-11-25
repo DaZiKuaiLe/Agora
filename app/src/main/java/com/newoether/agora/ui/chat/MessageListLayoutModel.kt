@@ -32,6 +32,29 @@ internal fun calculateTailLayoutHeightPx(
 ): Int = maxOf(minimumHeightPx, contentHeightPx)
 
 /**
+ * Extra LazyColumn after-content padding that replaces embedding [minimumHeightPx] into the last
+ * turn item. Padding is not part of LazyList's average item size, so a follow-bottom blank region
+ * cannot make a fast fling skip whole earlier turns.
+ */
+internal fun calculateFollowBottomExtraPaddingPx(
+    minimumHeightPx: Int,
+    lastTurnContentHeightPx: Int,
+): Int = (minimumHeightPx - lastTurnContentHeightPx.coerceAtLeast(0)).coerceAtLeast(0)
+
+internal fun measuredTurnContentHeightPx(
+    turn: MessageListTurn?,
+    messageHeights: Map<String, Int>,
+): Int {
+    if (turn == null) return 0
+    var sum = 0
+    for (message in turn.messages) {
+        val height = messageHeights[message.id] ?: continue
+        if (height > 0) sum += height
+    }
+    return sum
+}
+
+/**
  * One stable LazyColumn item per conversation turn.
  *
  * A USER starts a turn and every following non-USER message remains in that turn until the next
@@ -100,21 +123,32 @@ internal fun resolvePendingEditReplacement(
 }
 
 /**
- * Reuses unchanged turn objects across immutable streaming snapshots. Only the active tail turn
- * receives a new identity, allowing Compose to skip every historical LazyColumn item.
+ * Reuses a turn only when every message is still the same instance. Text growth replaces the
+ * tail turn; a copied historical message gets a new turn so stale text cannot stick.
  */
 internal class MessageListTurnCache {
     private var previousByKey: Map<String, MessageListTurn> = emptyMap()
 
     fun update(messages: List<ChatMessage>): List<MessageListTurn> {
-        val next = buildMessageListTurns(messages).map { candidate ->
-            previousByKey[candidate.key]
-                ?.takeIf { previous -> previous.messages == candidate.messages }
-                ?: candidate
+        val next = buildMessageListTurns(messages) { key, grouped ->
+            previousByKey[key]?.takeIf { previous ->
+                sameMessageInstances(previous.messages, grouped)
+            }
         }
         previousByKey = next.associateBy { it.key }
         return next
     }
+}
+
+private fun sameMessageInstances(
+    previous: List<ChatMessage>,
+    grouped: List<ChatMessage>,
+): Boolean {
+    if (previous.size != grouped.size) return false
+    for (index in previous.indices) {
+        if (previous[index] !== grouped[index]) return false
+    }
+    return true
 }
 
 /**
@@ -160,19 +194,21 @@ internal fun shouldAnimateMessageLifecycleEntrance(
     }
 }
 
-internal fun buildMessageListTurns(messages: List<ChatMessage>): List<MessageListTurn> {
+internal fun buildMessageListTurns(
+    messages: List<ChatMessage>,
+    reuse: ((key: String, grouped: List<ChatMessage>) -> MessageListTurn?)? = null,
+): List<MessageListTurn> {
     if (messages.isEmpty()) return emptyList()
 
     val turns = mutableListOf<MessageListTurn>()
-    var activeTurn = mutableListOf<ChatMessage>()
+    val activeTurn = ArrayList<ChatMessage>()
 
     fun flushActiveTurn() {
         if (activeTurn.isEmpty()) return
-        turns += MessageListTurn(
-            key = activeTurn.first().id,
-            messages = activeTurn.toList(),
-        )
-        activeTurn = mutableListOf()
+        val key = activeTurn.first().id
+        turns += reuse?.invoke(key, activeTurn)
+            ?: MessageListTurn(key, activeTurn.toList())
+        activeTurn.clear()
     }
 
     messages.forEach { message ->
@@ -187,17 +223,100 @@ internal fun buildMessageListTurns(messages: List<ChatMessage>): List<MessageLis
             // Preserve leading/error-only paths as their own stable items until a USER begins a
             // normal conversation turn.
             flushActiveTurn()
-            turns += MessageListTurn(message.id, listOf(message))
+            activeTurn += message
+            flushActiveTurn()
         }
     }
     flushActiveTurn()
     return turns
 }
 
+/**
+ * Top-bar turn total. Streaming text does not move it. A new user turn, a deletion,
+ * or a branch switch changes message identity and recounts those boundaries only.
+ */
+internal class MessageListTurnCountCache {
+    private var ids: Array<String> = emptyArray()
+    private var participants: IntArray = IntArray(0)
+    private var count: Int = 0
+    private var ready: Boolean = false
+
+    fun countOf(messages: List<ChatMessage>): Int {
+        if (matches(messages)) return count
+        count = buildMessageListTurns(messages).size
+        ids = Array(messages.size) { index -> messages[index].id }
+        participants = IntArray(messages.size) { index -> messages[index].participant.ordinal }
+        ready = true
+        return count
+    }
+
+    private fun matches(messages: List<ChatMessage>): Boolean {
+        if (!ready || messages.size != ids.size) return false
+        for (index in messages.indices) {
+            val message = messages[index]
+            if (message.id != ids[index]) return false
+            if (message.participant.ordinal != participants[index]) return false
+        }
+        return true
+    }
+}
+
+/** Branch/run chrome ignores text growth. The token changes only when that identity changes. */
+internal class RunProjectionIdentityCache {
+    private var previous: List<ChatMessage> = emptyList()
+    private var token: Int = 0
+    private var ready: Boolean = false
+
+    fun tokenOf(messages: List<ChatMessage>): Int {
+        if (ready && sameRunProjectionIdentity(previous, messages)) return token
+        previous = messages
+        token += 1
+        ready = true
+        return token
+    }
+}
+
+internal fun sameRunProjectionIdentity(
+    previous: List<ChatMessage>,
+    next: List<ChatMessage>,
+): Boolean {
+    if (previous.size != next.size) return false
+    for (index in previous.indices) {
+        val before = previous[index]
+        val after = next[index]
+        if (before === after) continue
+        if (
+            before.id != after.id ||
+            before.parentId != after.parentId ||
+            before.participant != after.participant ||
+            before.timestamp != after.timestamp ||
+            before.runId != after.runId ||
+            before.runSequence != after.runSequence
+        ) {
+            return false
+        }
+    }
+    return true
+}
+
 internal fun messageListTurnIndex(
     turns: List<MessageListTurn>,
     messageId: String,
 ): Int = turns.indexOfFirst { turn -> turn.messages.any { it.id == messageId } }
+
+/** 1-based turn under the top of the viewport. Approximate; sentinel maps to the last turn. */
+internal data class MessageListTurnProgress(val current: Int, val total: Int)
+
+internal fun visibleMessageListTurnProgress(
+    firstVisibleItemIndex: Int,
+    turnCount: Int,
+): MessageListTurnProgress? {
+    if (turnCount <= 0) return null
+    return MessageListTurnProgress(
+        current = firstVisibleItemIndex.coerceIn(0, turnCount - 1) + 1,
+        total = turnCount,
+    )
+}
 
 internal fun estimateMessageListTurnHeightPx(
     turn: MessageListTurn,
@@ -206,6 +325,26 @@ internal fun estimateMessageListTurnHeightPx(
 ): Float = turn.messages.sumOf { message ->
     (messageHeights[message.id]?.toDouble() ?: fallbackHeightPx.toDouble())
 }.toFloat()
+
+/**
+ * Vertical offset from the turn item's top to the start (top) of [messageId] within that turn.
+ * Used when jumping so reading begins at the message head, not the turn's geometric center.
+ */
+internal fun estimateMessageStartInTurnPx(
+    turn: MessageListTurn,
+    messageId: String,
+    messageHeights: Map<String, Int>,
+    fallbackHeightPx: Float,
+): Float {
+    val targetIndex = turn.messages.indexOfFirst { it.id == messageId }
+    if (targetIndex <= 0) return 0f
+    return turn.messages
+        .take(targetIndex)
+        .sumOf { message ->
+            (messageHeights[message.id]?.toDouble() ?: fallbackHeightPx.toDouble())
+        }
+        .toFloat()
+}
 
 internal fun estimateSearchMatchCenterInTurnPx(
     turn: MessageListTurn,

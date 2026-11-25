@@ -19,6 +19,9 @@ sealed interface ToolExecutionEvent {
     /** A low-volume lifecycle update. It is not command output. */
     data class Progress(val message: String) : ToolExecutionEvent
 
+    /** UI-only timing. Null fields leave the previous value in place. */
+    data class Timing(val connectMs: Long? = null, val execMs: Long? = null) : ToolExecutionEvent
+
     /** Exactly one authoritative model-facing result. */
     data class Completed(val result: ToolExecutionResult) : ToolExecutionEvent {
         constructor(text: String) : this(ToolExecutionResult(text = text))

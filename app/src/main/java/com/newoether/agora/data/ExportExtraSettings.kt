@@ -49,7 +49,8 @@ object ExportExtraSettings {
                 googleSearchEnabled = s["googleSearchEnabled"]?.jsonPrimitive?.boolean,
                 openAiWebSearchEnabled = s["openAiWebSearchEnabled"]?.jsonPrimitive?.boolean,
                 webSearchEnabled = s["webSearchEnabled"]?.jsonPrimitive?.boolean,
-                shellEnabled = s["shellEnabled"]?.jsonPrimitive?.boolean
+                shellEnabled = s["shellEnabled"]?.jsonPrimitive?.boolean,
+                askModeEnabled = s["askModeEnabled"]?.jsonPrimitive?.boolean,
             )
             if (!cs.isAllNull()) sm.saveConversationSettings(convId, cs)
         }

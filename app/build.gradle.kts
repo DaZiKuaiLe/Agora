@@ -92,6 +92,14 @@ android {
     buildFeatures {
         compose = true
     }
+    // Packaged local CLI tools (e.g. libnode_cli.so) under libnode/bin/<abi>/ so
+    // ProcessBuilder can exec them from nativeLibraryDir. Absent dirs are ignored by AGP.
+    @Suppress("UnstableApiUsage")
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("libnode/bin")
+        }
+    }
     // The app switches locales at runtime without Play Feature Delivery. Keep every
     // packaged translation available instead of letting App Bundles split languages.
     bundle {
@@ -183,6 +191,7 @@ dependencies {
     implementation(libs.lottie.compose)
     implementation(libs.work.runtime.ktx)
     implementation(libs.jsch)
+    implementation(libs.bouncycastle.bcprov)
     implementation(libs.commons.compress)
     debugImplementation(libs.androidx.compose.ui.tooling)
 

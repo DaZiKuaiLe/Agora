@@ -10,6 +10,8 @@ The budget includes the provider-visible request: system instructions, enabled t
 
 The context indicator in the chat bottom bar shows estimated usage. The estimate can differ from the provider's final token accounting because tokenizers and provider-side formatting vary.
 
+After opening a conversation, **View context** in the top-bar menu lists the system prompt and messages that the next send would give the model (composer draft excluded). It is a read-only audit and does not rewrite the transcript.
+
 A conversation can override the default context window from its advanced settings.
 
 ## Visualize Context Roll-Out
@@ -18,23 +20,19 @@ Enable **Visualize Context Roll-Out** to dim messages that are outside the curre
 
 ## Context Compact
 
-Context Compact summarizes older context into a durable Compact capsule while keeping recent messages verbatim. Original messages are not deleted.
+Older finished turns fold into **one plain-text residency** in the provider request. The newest turns stay verbatim. Original messages are not deleted.
 
-- **Automatic compact** starts before a send would overflow the active budget.
+- **Automatic compact** asks before send when uncompressed originals cross the per-model threshold. You can compact then send, or send this time without compacting.
 - **Compact model** chooses a dedicated enabled model. Leave it on the current model to follow the conversation.
-- **Recent messages to keep** preserves 0–20 recent messages verbatim after the Compact boundary.
-- **Compact prompt** controls the summary instructions.
+- **Recent turns to keep** (default 8) is the verbatim tail. Everything older than that, once compacted, is represented by the residency.
 
-You can also open the context indicator in the chat bottom bar and choose **Compact context**. Manual Compact uses the same generation controls as a normal response: an empty composer shows Stop, while text or attachments can be sent into the queue and run after Compact finishes.
+Each later compact folds only the newly aged-out originals and appends that as another residency chapter; earlier chapters are not sent back through the compact model. Open the context indicator and choose **Optimize all context** to de-detail long tool results and rewrite every chapter from originals, replaying the same threshold cadence. After a compact-mechanism change, the next send asks you to finish that optimize first (you can postpone; sending stays blocked).
 
-## Compact Capsules
-
-Tap a Compact capsule to read its summary. The overflow menu can recompact or delete the capsule.
-
-Deleting a Compact capsule removes only that summary boundary and reconnects the surrounding branch. It does not delete the original conversation messages.
+Use **search this conversation** when a detail is missing from the residency. `query_detail_store` is only for archived tool payloads.
 
 !!! tip
-    Use a smaller budget to reduce request size, or use Compact when a long conversation needs to preserve important earlier state without sending every old message verbatim.
+    Use a smaller budget to reduce request size, or use compact when a long conversation should not send every old turn verbatim.
 
 !!! note
-    Compact is a generated summary. Review important facts in the capsule before relying on it for long-running work.
+    The residency is lossy. Check the original transcript in the chat UI for facts you cannot afford to miss.
+

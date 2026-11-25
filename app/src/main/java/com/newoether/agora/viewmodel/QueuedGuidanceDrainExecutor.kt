@@ -10,6 +10,7 @@ import com.newoether.agora.model.MessageStatus
 import com.newoether.agora.model.Participant
 import com.newoether.agora.model.RunEffect
 import com.newoether.agora.model.RunStatus
+import com.newoether.agora.model.isProcessCompletionNoticeId
 import com.newoether.agora.util.DebugLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -151,14 +152,10 @@ internal class QueuedGuidanceDrainExecutor(
                         runId = runId,
                         modelId = modelId,
                     )
-                    val snapshot = conversations.getMessagesForConversationSnapshot(conversationId)
+                    val graph = conversations.getCompactMessageGraph(conversationId)
                     val selections = conversations.restoreBranchSelections(conversationId)
-                    val path = ConversationUiState.resolvePath(
-                        snapshot.map(toUiMessage),
-                        streamingMsg = null,
-                        selectedChildren = selections,
-                    )
-                    val parentId = path.lastOrNull()?.id
+                    val leaf = selectedVisiblePath(graph, selections).lastOrNull()
+                    val parentId = leaf?.id
                     val start = clock()
                     val users = listOf(
                         MessageEntity(
@@ -200,7 +197,7 @@ internal class QueuedGuidanceDrainExecutor(
                         run = RunEntity(
                             id = runId,
                             conversationId = conversationId,
-                            parentRunId = path.lastOrNull()?.runId,
+                            parentRunId = leaf?.runId,
                             status = RunStatus.ACTIVE,
                             activeSlot = 1,
                             startedAt = start,
@@ -230,7 +227,7 @@ internal class QueuedGuidanceDrainExecutor(
                         return@withConversationLock
                     }
                     committedUsers.forEach { user ->
-                        if (user.text.isNotBlank()) {
+                        if (user.text.isNotBlank() && !user.id.isProcessCompletionNoticeId()) {
                             runCatching { onUserMessagePersisted(user.id, user.text) }
                                 .onFailure { error ->
                                     DebugLog.w(

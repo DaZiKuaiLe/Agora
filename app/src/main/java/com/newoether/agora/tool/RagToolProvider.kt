@@ -7,6 +7,7 @@ import com.newoether.agora.api.ToolDefinition
 import com.newoether.agora.api.ToolFunction
 import com.newoether.agora.api.ToolParameters
 import com.newoether.agora.api.ToolProperty
+import com.newoether.agora.data.local.CompactMessageGraphRow
 import com.newoether.agora.data.local.MessageEntity
 import com.newoether.agora.data.repository.ConversationRepository
 import com.newoether.agora.model.Participant
@@ -14,7 +15,6 @@ import com.newoether.agora.util.Constants
 import com.newoether.agora.util.DebugLog
 import com.newoether.agora.viewmodel.GenerationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
@@ -37,8 +37,22 @@ class RagToolProvider(
     private val semanticSelector = BoundedSemanticEmbeddingSelector()
 
     override fun definitions(ctx: GenerationContext): List<ToolDefinition> {
-        if (!ctx.accessPastConversations) return emptyList()
-        return listOf(
+        val tools = mutableListOf<ToolDefinition>()
+        if (!ctx.conversationId.isNullOrBlank()) {
+            tools += ToolDefinition(function = ToolFunction(
+                name = "search_current_conversation",
+                description = "Keyword search of this conversation's original messages (including turns already folded into the compact summary). Use when a detail may be missing from the summary.",
+                parameters = ToolParameters(
+                    properties = mapOf(
+                        "query" to ToolProperty("string", "Keyword or phrase to find in this conversation's originals."),
+                        "limit" to ToolProperty("integer", "Maximum number of hits (1-20, default 10)."),
+                    ),
+                    required = listOf("query"),
+                ),
+            ))
+        }
+        if (!ctx.accessPastConversations) return tools
+        tools += listOf(
             ToolDefinition(function = ToolFunction(
                 name = "search_conversations",
                 description = "Search past conversations for relevant information. Use this to recall facts, decisions, or context from previous discussions.",
@@ -75,16 +89,78 @@ class RagToolProvider(
                 )
             ))
         )
+        return tools
     }
 
     override fun handles(name: String): Boolean =
-        name == "search_conversations" || name == "list_conversations" || name == "read_conversation"
+        name == "search_current_conversation" ||
+            name == "search_conversations" ||
+            name == "list_conversations" ||
+            name == "read_conversation"
 
     override suspend fun execute(name: String, arguments: String, ctx: GenerationContext): String = when (name) {
+        "search_current_conversation" -> executeSearchCurrentConversation(arguments, ctx)
         "search_conversations" -> executeSearchConversations(arguments, ctx)
         "list_conversations" -> executeListConversations(arguments, ctx)
         "read_conversation" -> executeReadConversation(arguments, ctx)
         else -> "Unknown tool: $name"
+    }
+
+    private suspend fun executeSearchCurrentConversation(
+        arguments: String,
+        ctx: GenerationContext,
+    ): String {
+        val conversationId = ctx.conversationId?.takeIf { it.isNotBlank() }
+            ?: return buildJsonObject {
+                put("type", "search_current_conversation")
+                put("error", "no_conversation")
+            }.toString()
+        val args = Json.decodeFromString<Map<String, kotlinx.serialization.json.JsonElement>>(
+            arguments.ifBlank { "{}" },
+        )
+        val query = (args["query"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+            ?: return buildJsonObject {
+                put("type", "search_current_conversation")
+                put("error", "no_query")
+            }.toString()
+        val limit = ((args["limit"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toIntOrNull()
+            ?: ctx.searchMatchLimit).coerceIn(1, 20)
+        val hits = conversations.searchMessagesInConversation(conversationId, query, limit)
+        if (hits.isEmpty()) {
+            return buildJsonObject {
+                put("type", "search_current_conversation")
+                put("query", query)
+                put("error", "no_results")
+            }.toString()
+        }
+        val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+        val messages = buildJsonArray {
+            for (msg in hits) {
+                add(
+                    buildJsonObject {
+                        put("turn_id", msg.turnId.orEmpty())
+                        put("message_id", msg.id)
+                        put("participant", msg.participant.name)
+                        put("text", msg.text)
+                        put("timestamp", dateFormat.format(java.util.Date(msg.timestamp)))
+                    },
+                )
+            }
+        }
+        return buildJsonObject {
+            put("type", "search_current_conversation")
+            put("query", query)
+            put("count", hits.size)
+            putJsonArray("results") {
+                add(
+                    buildJsonObject {
+                        put("title", "")
+                        put("match_count", hits.size)
+                        put("messages", messages)
+                    },
+                )
+            }
+        }.toString()
     }
 
     private data class SearchWindow(
@@ -128,11 +204,7 @@ class RagToolProvider(
 
             for ((convId, matchIds) in matchesByConv) {
                 val conversation = conversations.getSearchableConversation(convId) ?: continue
-                val allMsgs = conversations.getMessagesForConversation(convId).first()
-                    .filter { it.participant in listOf(Participant.USER, Participant.MODEL) }
-
-                // Build selected branch as indexed list
-                val branch = buildSelectedBranch(allMsgs, conversation.selectedBranchesJson)
+                val branch = selectedUserModelBranch(convId, conversation.selectedBranchesJson)
                 val indexMap = branch.withIndex().associate { (i, m) -> m.id to i }
                 val branchMatchIds = matchIds.filter { it in indexMap }.toSet()
 
@@ -175,12 +247,17 @@ class RagToolProvider(
                         val centerIdx = if (centerId != null) indexMap[centerId]!! else (range.first + range.last) / 2
                         cappedRange = ((centerIdx - halfN).coerceAtLeast(range.first)..(centerIdx + halfN).coerceAtMost(range.last))
                     }
-                    val windowMsgIds = branch.subList(cappedRange.first, cappedRange.last + 1).map { it.id }.toSet()
+                    val windowIds = branch.subList(cappedRange.first, cappedRange.last + 1).map { it.id }
+                    val windowMsgIds = windowIds.toSet()
                     val matchedInWindow = branchMatchIds.count { it in windowMsgIds }
                     allWindows.add(SearchWindow(
                         conversationId = convId,
                         conversationTitle = conversation.title,
-                        messages = cappedRange.map { branch[it] }.filter { it.text.isNotEmpty() && !it.id.startsWith(Constants.TOOL_MSG_PREFIX) && !it.id.startsWith(Constants.RESULT_MSG_PREFIX) },
+                        messages = hydrateOrderedMessages(windowIds).filter { message ->
+                            message.text.isNotEmpty() &&
+                                !message.id.startsWith(Constants.TOOL_MSG_PREFIX) &&
+                                !message.id.startsWith(Constants.RESULT_MSG_PREFIX)
+                        },
                         topScore = score,
                         matchCount = matchedInWindow
                     ))
@@ -304,18 +381,16 @@ class RagToolProvider(
                     put("error", "not_found")
                 }.toString()
 
-            val allMessages = conversations.getMessagesForConversation(conversationId).first()
-                .filter { it.participant in listOf(Participant.USER, Participant.MODEL) }
-            // buildSelectedBranch needs all intermediate nodes to walk the tree without gaps;
-            // text emptiness check is deferred: tool-only MODEL msgs must stay as parent-chain links.
-            val branch = buildSelectedBranch(allMessages, conversation.selectedBranchesJson)
+            // Walk identity first so tool-only MODEL rows stay as parent-chain links.
+            val branch = selectedUserModelBranch(conversationId, conversation.selectedBranchesJson)
                 .filter { !it.id.startsWith(Constants.TOOL_MSG_PREFIX) && !it.id.startsWith(Constants.RESULT_MSG_PREFIX) }
             val totalMessages = branch.size
-            val page = if (offset < totalMessages) {
-                branch.subList(offset, (offset + limit).coerceAtMost(totalMessages))
+            val pageIds = if (offset < totalMessages) {
+                branch.subList(offset, (offset + limit).coerceAtMost(totalMessages)).map { it.id }
             } else {
                 emptyList()
             }
+            val page = hydrateOrderedMessages(pageIds)
             val hasMore = offset + limit < totalMessages
 
             buildJsonObject {
@@ -347,36 +422,59 @@ class RagToolProvider(
         }
     }
 
+    private suspend fun selectedUserModelBranch(
+        conversationId: String,
+        selectedBranchesJson: String?,
+    ): List<CompactMessageGraphRow> {
+        val graph = conversations.getCompactMessageGraph(conversationId)
+            .filter { it.participant == Participant.USER || it.participant == Participant.MODEL }
+        return walkSelectedBranch(
+            nodes = graph,
+            idOf = CompactMessageGraphRow::id,
+            parentOf = CompactMessageGraphRow::parentId,
+            selectedBranchesJson = selectedBranchesJson,
+        )
+    }
+
+    private suspend fun hydrateOrderedMessages(ids: List<String>): List<MessageEntity> {
+        if (ids.isEmpty()) return emptyList()
+        val byId = conversations.getMessagesByIds(ids).associateBy { it.id }
+        return ids.mapNotNull { byId[it] }
+    }
+
     /**
      * Reconstruct the user-selected message branch for a conversation.
      * Uses selectedBranchesJson (Map<parentId → childId>) to walk from root to leaf.
      */
-    private fun buildSelectedBranch(
-        allMessages: List<MessageEntity>,
-        selectedBranchesJson: String?
-    ): List<MessageEntity> {
+    private fun <T> walkSelectedBranch(
+        nodes: List<T>,
+        idOf: (T) -> String,
+        parentOf: (T) -> String?,
+        selectedBranchesJson: String?,
+    ): List<T> {
         val selections: Map<String?, String> = try {
             val raw = Json.decodeFromString<Map<String, String>>(selectedBranchesJson ?: "{}")
             raw.mapKeys { if (it.key == "null") null else it.key }
         } catch (_: Exception) { emptyMap() }
 
-        val byParent = allMessages.groupBy { it.parentId }
-        val path = mutableListOf<MessageEntity>()
+        val byParent = nodes.groupBy(parentOf)
+        val path = mutableListOf<T>()
         var parentId: String? = null
         while (true) {
             val siblings = byParent[parentId] ?: break
             if (siblings.isEmpty()) break
             val selectedId = selections[parentId]
             val visible = siblings.filter {
-                !it.id.startsWith(Constants.TOOL_MSG_PREFIX) && !it.id.startsWith(Constants.RESULT_MSG_PREFIX)
+                val id = idOf(it)
+                !id.startsWith(Constants.TOOL_MSG_PREFIX) && !id.startsWith(Constants.RESULT_MSG_PREFIX)
             }
             val chosen = if (visible.isNotEmpty()) {
-                visible.find { it.id == selectedId } ?: visible.last()
+                visible.find { idOf(it) == selectedId } ?: visible.last()
             } else {
-                siblings.find { it.id == selectedId } ?: siblings.last()
+                siblings.find { idOf(it) == selectedId } ?: siblings.last()
             }
             path.add(chosen)
-            parentId = chosen.id
+            parentId = idOf(chosen)
         }
         return path
     }

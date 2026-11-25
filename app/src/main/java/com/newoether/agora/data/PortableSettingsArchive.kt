@@ -47,8 +47,9 @@ internal object PortableSettingsArchive {
         put("visualizeContextRollout", JsonPrimitive(sm.visualizeContextRollout.first()))
         put("contextCompactEnabled", JsonPrimitive(sm.contextCompactEnabled.first()))
         putNullableString("contextCompactModel", sm.contextCompactModel.first())
-        put("contextCompactPrompt", JsonPrimitive(sm.contextCompactPrompt.first()))
-        put("contextCompactRetainCount", JsonPrimitive(sm.contextCompactRetainCount.first()))
+        put("contextCompactBatchSize", JsonPrimitive(sm.contextCompactBatchSize.first()))
+        put("contextCompactRetainCount", JsonPrimitive(sm.contextCompactBatchSize.first()))
+        put("contextCompactFreezeThreshold", JsonPrimitive(sm.contextCompactFreezeThreshold.first()))
         put("codeExecutionEnabled", JsonPrimitive(sm.codeExecutionEnabled.first()))
         put("googleSearchEnabled", JsonPrimitive(sm.googleSearchEnabled.first()))
         put("openAiServiceTierEnabled", JsonPrimitive(sm.openAiServiceTierEnabled.first()))
@@ -215,8 +216,14 @@ internal object PortableSettingsArchive {
         if (obj.containsKey("contextCompactModel")) {
             sm.saveContextCompactModel(obj.nullableString("contextCompactModel")?.let(::remapModel))
         }
-        obj.string("contextCompactPrompt")?.let { sm.saveContextCompactPrompt(it) }
-        obj.int("contextCompactRetainCount")?.takeIf { it >= 0 }?.let { sm.saveContextCompactRetainCount(it) }
+        // Editable compact prompts retired; ignore portable field and clear legacy store.
+        sm.saveContextCompactPrompt("")
+        obj.int("contextCompactBatchSize")?.takeIf { it in 2..32 }?.let {
+            sm.saveContextCompactBatchSize(it)
+        } ?: obj.int("contextCompactRetainCount")?.takeIf { it in 2..32 }?.let {
+            sm.saveContextCompactBatchSize(it)
+        }
+        obj.int("contextCompactFreezeThreshold")?.let { sm.saveContextCompactFreezeThreshold(it) }
         obj.boolean("codeExecutionEnabled")?.let { sm.saveCodeExecutionEnabled(it) }
         obj.boolean("googleSearchEnabled")?.let { sm.saveGoogleSearchEnabled(it) }
         obj.boolean("openAiServiceTierEnabled")?.let { sm.saveOpenAiServiceTierEnabled(it) }
@@ -351,6 +358,16 @@ internal object PortableSettingsArchive {
                         raw.sshPassword
                     } else {
                         existing?.sshPassword.orEmpty()
+                    },
+                    sshPrivateKey = if (allowLegacySecrets) {
+                        raw.sshPrivateKey
+                    } else {
+                        existing?.sshPrivateKey.orEmpty()
+                    },
+                    sshKeyPassphrase = if (allowLegacySecrets) {
+                        raw.sshKeyPassphrase
+                    } else {
+                        existing?.sshKeyPassphrase.orEmpty()
                     },
                 )
             }

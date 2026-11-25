@@ -250,7 +250,12 @@ class OllamaProvider : LlmProvider {
             while (attempt < maxAttempts && !completed) {
                 attempt++
                 val handle = try {
-                    HttpClient.streamPost(url, requestBodyJson, headers)
+                    HttpClient.streamPost(
+                        url,
+                        requestBodyJson,
+                        headers,
+                        responseCapture = config.apiResponseCapture,
+                    )
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -419,6 +424,7 @@ class OllamaProvider : LlmProvider {
                             emit(StreamEvent.Retrying(attempt, ProviderRetryPolicy.MAX_RETRIES))
                             delay(ProviderRetryPolicy.delayMillis(attempt))
                         } else {
+                            emit(StreamEvent.Completion(termination.stopReason))
                             termination.toError("Ollama")?.let { emit(StreamEvent.Error(it)) }
                             completed = true
                         }

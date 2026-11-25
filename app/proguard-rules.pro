@@ -18,9 +18,11 @@
 # DataStore
 -keepclassmembers class * extends androidx.datastore.preferences.protobuf.GeneratedMessageLite { <fields>; }
 
-# JSch (SSH/SFTP)
+# JSch (SSH/SFTP) + BouncyCastle EdDSA used on Android
 -keep class com.jcraft.jsch.** { *; }
 -dontwarn com.jcraft.jsch.**
+-keep class org.bouncycastle.crypto.** { *; }
+-dontwarn org.bouncycastle.**
 
 # Compose
 -dontwarn androidx.compose.**

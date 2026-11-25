@@ -1,19 +1,15 @@
 # Remote Shell
 
-Open **Settings → Shell Devices** to configure Conch or SSH devices used by agentic tools.
-
-## Conch
-
-Configure the server URL, optional API key, and command-confirmation policy. With an API key, Agora fetches the server's signed public key, derives an ephemeral shared key, and sends authenticated AES-GCM requests. With a blank key, the application payload is plain JSON and transport confidentiality depends on HTTPS.
-
-Foreground commands are created as durable server jobs and waited on for a bounded period. If the wait expires, the command is not killed or replayed: Agora returns a `job_id` that can be inspected, waited on, stopped, and acknowledged later. Conch tools also support remote read, write, edit, glob, grep, and image viewing.
+Open **Settings → Shell Devices** to configure SSH devices used by agentic tools. Conch is deprecated and is no longer offered as a live backend; leftover Conch fields in old backups are ignored.
 
 ## SSH
 
-Configure host, port, user, authentication, and host-key verification/pinning. Direct SSH transport is separate from Agora's shared HTTP proxy.
+Configure host, port, user, and host-key verification/pinning. Authentication is either a login password or a private key (OpenSSH, PEM, or PuTTY), not both. Encrypted keys may include an optional passphrase. Import a key with the in-app file browser; this needs all-files access and lists hidden folders such as `.ssh`. Direct SSH transport is separate from Agora's shared HTTP proxy.
+
+Remote file read, write, and edit use SFTP (`read_remote_file`, `str_replace_remote`, `write_remote_file`). Listing one folder uses one SFTP `ls` (`list_remote_files`). Recursive name and content search (`glob_remote_files`, `grep_remote`) run `find`/`grep` or PowerShell on the host and fail if those tools are unavailable — they do not download the tree to the phone. Short commands use `execute_remote_command`. Commands that may take five seconds or more, or that should keep running while the model talks or starts other work, use `start_remote_process` plus get/wait/stop. A timed-out short command is stopped; it is not turned into a process.
 
 ## Confirmation
 
-Commands can require confirmation or be always allowed per configured server. Treat both shell types as high-trust capabilities: the remote account's permissions define what the model can change.
+Commands, writes, replaces, and transfers can require confirmation or be always allowed per configured server. Treat SSH as a high-trust capability: the remote account's permissions define what the model can change.
 
 See [Agentic Tools](tools.md), [Network Proxy](proxy.md), and [Privacy & Security](privacy.md).

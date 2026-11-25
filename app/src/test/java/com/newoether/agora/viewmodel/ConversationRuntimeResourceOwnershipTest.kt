@@ -3,8 +3,11 @@ package com.newoether.agora.viewmodel
 import com.newoether.agora.model.ChatMessage
 import com.newoether.agora.model.MessageStatus
 import com.newoether.agora.model.Participant
-import com.newoether.agora.model.RuntimeRunIdentity
+import com.newoether.agora.model.RunEffect
 import com.newoether.agora.model.RunState
+import com.newoether.agora.model.RuntimeRunIdentity
+import com.newoether.agora.model.SlotReleaseReason
+import com.newoether.agora.model.Transition
 import kotlinx.coroutines.Job
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -48,14 +51,37 @@ class ConversationRuntimeResourceOwnershipTest {
     }
 
     @Test
-    fun streamClear_keepsStoppedOverlay() {
+    fun streamClear_commitsStoppedFinalMessageBeforeRemovingOverlay() {
         val resources = activeResources()
         val stopped = message(MessageStatus.STOPPED)
         resources.streamUpdate(OWNER_TOKEN, stopped)
 
-        assertNull(resources.streamMessageForClear(OWNER_TOKEN))
+        val committed = resources.streamMessageForClear(OWNER_TOKEN)!!
+        resources.clearStreamingMessage()
 
-        assertEquals(stopped, resources.streamingMessage.value)
+        assertEquals(MessageStatus.STOPPED, committed.status)
+        assertEquals(stopped, committed)
+        assertNull(resources.streamingMessage.value)
+    }
+
+    @Test
+    fun streamClear_staleTokenCannotTakeAForceStopOverlay() {
+        val resources = activeResources()
+        resources.streamUpdate(OWNER_TOKEN, message(MessageStatus.SENDING))
+        val bound = RuntimeRunIdentity("conversation", OWNER_TOKEN, runId = "run")
+        val stopping = RunState.Stopping(
+            identity = bound,
+            finalizationEffectId = "stop-1",
+            coroutineSettled = false,
+            persistenceSettled = false,
+        )
+        resources.applyMailboxEffects(
+            Transition(stopping, listOf(RunEffect.CancelProviderPass(bound))),
+            stopping,
+        )
+
+        assertNull(resources.streamMessageForClear(OWNER_TOKEN))
+        assertEquals(MessageStatus.STOPPED, resources.streamingMessage.value?.status)
     }
 
     @Test
@@ -146,6 +172,231 @@ class ConversationRuntimeResourceOwnershipTest {
         } finally {
             pendingFile.delete()
             claimedFile.delete()
+        }
+    }
+
+    @Test
+    fun stopAndSlotLifecycleDoNotCrashOnUnboundOrLeftoverOverlay() {
+        data class Case(
+            val name: String,
+            val run: (ConversationRuntimeResources) -> Unit,
+            val overlayStatus: MessageStatus?,
+            val currentToken: Long,
+        )
+        val unbound = RuntimeRunIdentity("conversation", OWNER_TOKEN)
+        val bound = RuntimeRunIdentity("conversation", OWNER_TOKEN, runId = "run")
+        val sending = message(MessageStatus.SENDING)
+        val cases = listOf(
+            Case(
+                name = "activate clears leftover overlay",
+                run = { resources ->
+                    resources.activate(unbound, loading = false)
+                    resources.streamUpdate(OWNER_TOKEN, sending)
+                    resources.activate(
+                        RuntimeRunIdentity("conversation", OWNER_TOKEN + 1),
+                        loading = false,
+                    )
+                },
+                overlayStatus = null,
+                currentToken = OWNER_TOKEN + 1,
+            ),
+            Case(
+                name = "unbound Stop with overlay is accepted",
+                run = { resources ->
+                    resources.activate(unbound, loading = false)
+                    resources.streamUpdate(OWNER_TOKEN, sending)
+                    val stopping = RunState.Stopping(
+                        identity = unbound,
+                        finalizationEffectId = null,
+                        coroutineSettled = false,
+                        persistenceSettled = true,
+                    )
+                    resources.applyMailboxEffects(
+                        Transition(stopping, listOf(RunEffect.CancelProviderPass(unbound))),
+                        stopping,
+                    )
+                },
+                overlayStatus = null,
+                currentToken = OWNER_TOKEN + 1,
+            ),
+            Case(
+                name = "bound Stop keeps a STOPPED overlay",
+                run = { resources ->
+                    resources.activate(bound, loading = false)
+                    resources.streamUpdate(OWNER_TOKEN, sending)
+                    val stopping = RunState.Stopping(
+                        identity = bound,
+                        finalizationEffectId = "stop-1",
+                        coroutineSettled = false,
+                        persistenceSettled = false,
+                    )
+                    resources.applyMailboxEffects(
+                        Transition(stopping, listOf(RunEffect.CancelProviderPass(bound))),
+                        stopping,
+                    )
+                },
+                overlayStatus = MessageStatus.STOPPED,
+                currentToken = OWNER_TOKEN + 1,
+            ),
+            Case(
+                name = "duplicate Stop after token advance is ignored",
+                run = { resources ->
+                    resources.activate(bound, loading = false)
+                    resources.streamUpdate(OWNER_TOKEN, sending)
+                    val stopping = RunState.Stopping(
+                        identity = bound,
+                        finalizationEffectId = "stop-1",
+                        coroutineSettled = false,
+                        persistenceSettled = false,
+                    )
+                    val transition = Transition(
+                        stopping,
+                        listOf(RunEffect.CancelProviderPass(bound)),
+                    )
+                    resources.applyMailboxEffects(transition, stopping)
+                    resources.applyMailboxEffects(transition, stopping)
+                },
+                overlayStatus = MessageStatus.STOPPED,
+                currentToken = OWNER_TOKEN + 1,
+            ),
+            Case(
+                name = "release clears overlay",
+                run = { resources ->
+                    resources.activate(bound, loading = false)
+                    resources.streamUpdate(OWNER_TOKEN, sending)
+                    val idle = RunState.Idle("conversation")
+                    resources.applyMailboxEffects(
+                        Transition(
+                            idle,
+                            listOf(RunEffect.ReleaseSlot(bound, SlotReleaseReason.EMPTY_STOP)),
+                        ),
+                        idle,
+                    )
+                },
+                overlayStatus = null,
+                currentToken = OWNER_TOKEN,
+            ),
+        )
+        cases.forEach { case ->
+            val resources = ConversationRuntimeResources()
+            case.run(resources)
+            assertEquals(case.name, case.overlayStatus, resources.streamingMessage.value?.status)
+            assertTrue(case.name, resources.isCurrentToken(case.currentToken))
+        }
+    }
+
+    @Test
+    fun cooperativeStopRequest_marksOnceAndClearsOnActivateReleaseOrForceStop() {
+        data class Case(
+            val name: String,
+            val run: (ConversationRuntimeResources) -> Boolean,
+            val accepted: Boolean,
+            val requested: Boolean,
+        )
+        val bound = RuntimeRunIdentity("conversation", OWNER_TOKEN, runId = "run")
+        val cases = listOf(
+            Case(
+                name = "idle cannot request",
+                run = { it.markCooperativeStopRequested() },
+                accepted = false,
+                requested = false,
+            ),
+            Case(
+                name = "active marks once",
+                run = { resources ->
+                    resources.activate(bound, loading = true)
+                    resources.markCooperativeStopRequested()
+                },
+                accepted = true,
+                requested = true,
+            ),
+            Case(
+                name = "second mark is a no-op",
+                run = { resources ->
+                    resources.activate(bound, loading = true)
+                    resources.markCooperativeStopRequested()
+                    resources.markCooperativeStopRequested()
+                },
+                accepted = false,
+                requested = true,
+            ),
+            Case(
+                name = "consume takes the request",
+                run = { resources ->
+                    resources.activate(bound, loading = true)
+                    resources.markCooperativeStopRequested()
+                    resources.consumeCooperativeStopRequested()
+                },
+                accepted = true,
+                requested = false,
+            ),
+            Case(
+                name = "consume when unset is false",
+                run = { resources ->
+                    resources.activate(bound, loading = true)
+                    resources.consumeCooperativeStopRequested()
+                },
+                accepted = false,
+                requested = false,
+            ),
+            Case(
+                name = "activate clears leftover",
+                run = { resources ->
+                    resources.activate(bound, loading = true)
+                    resources.markCooperativeStopRequested()
+                    resources.activate(
+                        RuntimeRunIdentity("conversation", OWNER_TOKEN + 1, runId = "next"),
+                        loading = true,
+                    )
+                    resources.markCooperativeStopRequested()
+                },
+                accepted = true,
+                requested = true,
+            ),
+            Case(
+                name = "release clears leftover",
+                run = { resources ->
+                    resources.activate(bound, loading = true)
+                    resources.markCooperativeStopRequested()
+                    val idle = RunState.Idle("conversation")
+                    resources.applyMailboxEffects(
+                        Transition(
+                            idle,
+                            listOf(RunEffect.ReleaseSlot(bound, SlotReleaseReason.EMPTY_STOP)),
+                        ),
+                        idle,
+                    )
+                    resources.markCooperativeStopRequested()
+                },
+                accepted = false,
+                requested = false,
+            ),
+            Case(
+                name = "force stop clears leftover",
+                run = { resources ->
+                    resources.activate(bound, loading = true)
+                    resources.markCooperativeStopRequested()
+                    val stopping = RunState.Stopping(
+                        identity = bound,
+                        finalizationEffectId = "stop-1",
+                        coroutineSettled = false,
+                        persistenceSettled = false,
+                    )
+                    resources.applyMailboxEffects(
+                        Transition(stopping, listOf(RunEffect.CancelProviderPass(bound))),
+                        stopping,
+                    )
+                    resources.markCooperativeStopRequested()
+                },
+                accepted = false,
+                requested = false,
+            ),
+        )
+        cases.forEach { case ->
+            val resources = ConversationRuntimeResources()
+            val accepted = case.run(resources)
+            assertEquals(case.name, case.accepted, accepted)
+            assertEquals(case.name, case.requested, resources.cooperativeStopRequested.value)
         }
     }
 

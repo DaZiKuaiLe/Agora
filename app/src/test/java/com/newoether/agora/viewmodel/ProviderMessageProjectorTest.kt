@@ -122,4 +122,28 @@ class ProviderMessageProjectorTest {
         )
     }
 
+    @Test
+    fun `user path reference tokens expand for provider projection`() {
+        val token = com.newoether.agora.util.PathReferenceTokens.wrap(
+            "/storage/emulated/0/Download/a.txt",
+        )
+        val entity = MessageEntity(
+            id = "user",
+            conversationId = "conversation",
+            text = "open $token",
+            status = MessageStatus.SUCCESS,
+            participant = Participant.USER,
+            timestamp = 1L,
+            runId = "run",
+        )
+        val projected = projectProviderMessages(
+            entities = listOf(entity),
+            includeStoredTranscriptions = false,
+        ).single()
+        assertEquals(
+            "open /storage/emulated/0/Download/a.txt",
+            projected.text,
+        )
+        assertTrue(!projected.text.contains("agora-path"))
+    }
 }

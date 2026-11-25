@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.res.stringResource
 import com.newoether.agora.R
 import com.newoether.agora.model.ChatMessage
+import com.newoether.agora.model.ContextBudget
 import com.newoether.agora.model.Participant
 import com.newoether.agora.data.CustomProviderConfig
 import com.newoether.agora.data.modelDisplayName
@@ -42,13 +43,13 @@ internal fun MessageInfoDialog(
         tokenUsage.input == null -> "—"
         tokenUsage.cachedInput != null -> stringResource(
             R.string.token_count_with_cached,
-            tokenUsage.input,
-            tokenUsage.cachedInput,
+            ContextBudget.groupedLabel(tokenUsage.input),
+            ContextBudget.groupedLabel(tokenUsage.cachedInput),
         )
-        else -> stringResource(R.string.token_count, tokenUsage.input)
+        else -> stringResource(R.string.token_count, ContextBudget.groupedLabel(tokenUsage.input))
     }
     val outputTokens = tokenUsage.output?.let {
-        stringResource(R.string.token_count, it)
+        stringResource(R.string.token_count, ContextBudget.groupedLabel(it))
     } ?: "—"
 
     AlertDialog(

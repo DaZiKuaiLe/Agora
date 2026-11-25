@@ -284,6 +284,10 @@ object DeveloperDiagnostics {
                     "maxAttempts" to maxAttempts.toString(),
                 ),
             )
+            is StreamEvent.Completion -> ParsedEventDetails(
+                eventType = "Completion",
+                attributes = mapOf("stopReason" to (stopReason ?: "")),
+            )
         }
 
     private fun captureParsedContent(

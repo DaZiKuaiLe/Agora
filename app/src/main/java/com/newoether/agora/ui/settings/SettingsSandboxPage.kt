@@ -46,6 +46,9 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -71,6 +74,7 @@ fun SettingsSandboxPage(
     val scope = rememberCoroutineScope()
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     val ctx = androidx.compose.ui.platform.LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val installFailedMessage = stringResource(R.string.sandbox_install_failed)
     var sharedStorageAccessGranted by remember {
         mutableStateOf(SandboxSharedStorageAccess.isGranted(ctx))
@@ -84,6 +88,15 @@ fun SettingsSandboxPage(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
         sharedStorageAccessGranted = SandboxSharedStorageAccess.isGranted(ctx)
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                sharedStorageAccessGranted = SandboxSharedStorageAccess.isGranted(ctx)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     fun requestSharedStorageAccess() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {

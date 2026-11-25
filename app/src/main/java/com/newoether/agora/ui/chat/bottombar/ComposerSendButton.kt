@@ -54,6 +54,10 @@ internal fun ComposerSendButton(
     /** A Stop was pressed and the generation is still unwinding. The FAB goes gray + spinner:
      *  the send form returning is the contract that the next message launches immediately. */
     isStopping: Boolean = false,
+    /** Cooperative stop was requested. Keep the Stop icon, grayed, and ignore taps until
+     *  this turn actually ends. Distinct from [isStopping] (force-stop unwind). */
+    isStopRequested: Boolean = false,
+    isCompacting: Boolean = false,
     isModelValid: Boolean,
     onSendMessage: suspend (
         String,
@@ -74,6 +78,9 @@ internal fun ComposerSendButton(
         submittedText: String,
         submittedAttachments: List<SelectedAttachment>,
     ) {
+        // Keep path-reference tokens in the stored user message so history can render capsules.
+        // ProviderMessageProjector expands them when building the model/tool request.
+        val originalText = submittedText
         val submittedAttachmentIds = submittedAttachments.map { it.localId }
         isSubmitting = true
         try {
@@ -81,7 +88,7 @@ internal fun ComposerSendButton(
             // the actual handoff may take time (attachment processing) before the send lands.
             keyboardController?.hide()
             onSendMessage(
-                submittedText,
+                originalText,
                 submittedAttachments,
             ) {
                 // Confirm the durable handoff, not the initial tap. Attachment-backed sends can
@@ -90,7 +97,7 @@ internal fun ComposerSendButton(
                 if (composer.selectedAttachments.map { it.localId } == submittedAttachmentIds) {
                     composer.clearAttachments()
                 }
-                if (textFieldState.text.toString() == submittedText) {
+                if (textFieldState.text.toString() == originalText) {
                     textFieldState.edit { replace(0, length, "") }
                 }
                 // End the gray busy state in the same successful handoff that clears the input.
@@ -114,14 +121,14 @@ internal fun ComposerSendButton(
     }
     val textIsEmpty = textFieldState.text.isBlank()
     val attachmentsIsEmpty = composer.selectedAttachments.isEmpty()
-    // While stopping, Stop is already spent and the terminal Run cannot accept more input.
-    // Keep the draft untouched until the slot has fully released and the send form returns.
-    val showStop = isLoading && !isStopping && textIsEmpty && attachmentsIsEmpty
+    val showingStop = isLoading && !isStopping && !isCompacting && textIsEmpty && attachmentsIsEmpty
+    val stopRequestSpent = isStopRequested && showingStop
 
-    val canSend = (textFieldState.text.isNotBlank() || composer.selectedAttachments.isNotEmpty()) && isModelValid && !isSwitching && !isStopping && !isSubmitting
-            && composer.selectedAttachments.none { it.localPath == null && (it.type == "image" || it.type == "file") }
-    val isBusy = isStopping || isSubmitting || composer.pendingSend
-    val isActionable = (isLoading || canSend) && !isSwitching && !isBusy
+    val canSend = (textFieldState.text.isNotBlank() || composer.selectedAttachments.isNotEmpty()) &&
+        isModelValid && !isSwitching && !isStopping && !isCompacting && !isSubmitting &&
+        composer.selectedAttachments.none { it.localPath == null && (it.type == "image" || it.type == "file") }
+    val isBusy = isStopping || isCompacting || isSubmitting || composer.pendingSend
+    val isActionable = (isLoading || canSend) && !isSwitching && !isBusy && !stopRequestSpent
     val containerColor by animateColorAsState(
         targetValue = if (isActionable) {
             MaterialTheme.colorScheme.primary
@@ -142,8 +149,8 @@ internal fun ComposerSendButton(
     )
     FloatingActionButton(
         onClick = {
-            if (isSwitching || isStopping) return@FloatingActionButton
-            if (showStop) onStopGeneration()
+            if (isSwitching || isStopping || isCompacting || stopRequestSpent) return@FloatingActionButton
+            if (showingStop) onStopGeneration()
             else if (composer.pendingSend) {
                 haptics.selection()
                 composer.pendingSend = false
@@ -167,9 +174,9 @@ internal fun ComposerSendButton(
         elevation = FloatingActionButtonDefaults.elevation(0.dp, 0.dp, 0.dp, 0.dp)
     ) {
         val fabIcon = when {
-            isStopping || isSubmitting -> ComposerActionIcon.STOPPING
+            isStopping || isSubmitting || isCompacting -> ComposerActionIcon.STOPPING
             composer.pendingSend -> ComposerActionIcon.PENDING
-            showStop -> ComposerActionIcon.STOP
+            showingStop -> ComposerActionIcon.STOP
             else -> ComposerActionIcon.SEND
         }
         Crossfade(
@@ -193,7 +200,10 @@ internal fun ComposerSendButton(
                 )
                 ComposerActionIcon.STOP -> Icon(
                     Icons.Default.Stop,
-                    stringResource(R.string.action),
+                    stringResource(
+                        if (isStopRequested) R.string.stop_generation_requested
+                        else R.string.stop_generation,
+                    ),
                     modifier = Modifier.size(24.dp),
                 )
                 ComposerActionIcon.SEND -> Icon(

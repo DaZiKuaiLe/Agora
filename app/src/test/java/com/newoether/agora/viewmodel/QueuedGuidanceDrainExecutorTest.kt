@@ -59,7 +59,7 @@ class QueuedGuidanceDrainExecutorTest {
             )
         } returns fixture.snapshot
         coEvery {
-            fixture.conversations.getMessagesForConversationSnapshot("conversation")
+            fixture.conversations.getCompactMessageGraph("conversation")
         } returns emptyList()
         coEvery {
             fixture.conversations.restoreBranchSelections("conversation")

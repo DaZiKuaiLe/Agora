@@ -74,6 +74,7 @@ class ConversationGenerationState(
     val isLoading = resources.isLoading
     val generating = resources.generating
     val stopping = resources.stopping
+    val cooperativeStopRequested = resources.cooperativeStopRequested
     val generationSnapshot = resources.generationSnapshot
     val queuedSends = guidanceLeases.queuedSends
 
@@ -406,10 +407,24 @@ class ConversationGenerationState(
         // Steering: lets the tool loop see a mid-generation queued send and end at the next
         // round boundary, so the queue flushes without waiting out the whole tool loop.
         hasQueuedSends = { queuedSends.value.isNotEmpty() },
+        consumeCooperativeStop = { consumeCooperativeStopRequested() },
         onToolBatchRequested = commands::requestToolBatch,
         onToolBatchCompleted = commands::completeToolBatch,
         onToolRoundCommitted = commands::finishToolRoundCommit,
     )
+
+    /**
+     * Cooperative Stop: wait for the next safe message-interval boundary. Does not cancel
+     * in-flight HTTP, native streams, or tool writes. No-op when idle, already stopping, or
+     * already requested. Returns true only on the first accepted request of this turn.
+     */
+    fun markCooperativeStopRequested(): Boolean = synchronized(genLock) {
+        resources.markCooperativeStopRequested()
+    }
+
+    internal fun consumeCooperativeStopRequested(): Boolean = synchronized(genLock) {
+        resources.consumeCooperativeStopRequested()
+    }
 
     // ── Stop / finalization ───────────────────────────────────────────────
     /**

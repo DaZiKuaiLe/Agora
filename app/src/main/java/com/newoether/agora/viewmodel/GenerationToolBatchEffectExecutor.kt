@@ -13,6 +13,7 @@ import com.newoether.agora.model.toCitationRecord
 import com.newoether.agora.model.toMessageSegment
 import com.newoether.agora.tool.ToolExecutionEvent
 import com.newoether.agora.tool.ToolExecutionResult
+import com.newoether.agora.tool.ToolTiming
 import com.newoether.agora.util.Constants
 
 private const val TOOL_PROGRESS_UI_UPDATE_INTERVAL_MS = 50L
@@ -177,6 +178,15 @@ internal class GenerationToolOverlay(
     }
 
     fun start(call: StreamEvent.ToolCallRequest) {
+        if (!hasStream(call.streamKey)) {
+            upsert(
+                streamKey = call.streamKey,
+                toolCallId = call.id,
+                name = call.name,
+                arguments = call.arguments,
+                signature = call.signature,
+            )
+        }
         val index = checkNotNull(streamIndices[call.streamKey]) {
             "Missing live segment for tool call ${call.streamKey}"
         }
@@ -193,6 +203,7 @@ internal class GenerationToolOverlay(
                 call.responseOutputItems.isNotEmpty()
             },
             toolState = ToolExecutionStates.RUNNING,
+            toolStartedAtMs = current.toolStartedAtMs ?: System.currentTimeMillis(),
             toolTarget = metadata?.target ?: current.toolTarget,
             toolDisplayName = metadata?.displayName ?: current.toolDisplayName,
         )
@@ -216,6 +227,10 @@ internal class GenerationToolOverlay(
             )
             is ToolExecutionEvent.TargetResolved -> current.copy(toolTarget = event.target)
             is ToolExecutionEvent.Progress -> current.copy(toolState = ToolExecutionStates.RUNNING)
+            is ToolExecutionEvent.Timing -> current.copy(
+                toolConnectMs = ToolTiming.mergeConnectMs(current.toolConnectMs, event.connectMs),
+                toolExecMs = ToolTiming.mergeExecMs(current.toolExecMs, event.execMs),
+            )
             is ToolExecutionEvent.Completed -> current
         }
     }
@@ -224,20 +239,38 @@ internal class GenerationToolOverlay(
         call: StreamEvent.ToolCallRequest,
         result: ToolExecutionResult,
         transcription: String? = null,
+        nowMs: Long = System.currentTimeMillis(),
     ): CompletedToolCall {
         val index = checkNotNull(streamIndices[call.streamKey]) {
             "Missing live segment for tool call ${call.streamKey}"
         }
+        val current = segments[index]
         val clipped = result.text.take(Constants.MAX_TOOL_RESULT_LENGTH)
         val displayText = result.displayText?.take(Constants.MAX_TOOL_RESULT_LENGTH)
         val structuredResult = result.structuredContent?.take(Constants.MAX_TOOL_RESULT_LENGTH)
-        val completed = segments[index].copy(
-            toolResult = clipped,
+        val state = if (result.isError) ToolExecutionStates.FAILED else finalToolState(result.text)
+        val execMs = ToolTiming.completedExecMs(
+            toolName = call.name,
+            currentExecMs = current.toolExecMs,
+            startedAtMs = current.toolStartedAtMs,
+            nowMs = nowMs,
+            finalState = state,
+        )
+        val resultForModel = ToolTiming.attachToResult(
+            text = clipped,
+            toolName = call.name,
+            connectMs = current.toolConnectMs,
+            commandMs = execMs,
+        )
+        val completed = current.copy(
+            toolResult = resultForModel,
             toolResultText = displayText,
             toolStructuredResult = structuredResult,
-            toolState = if (result.isError) ToolExecutionStates.FAILED else finalToolState(result.text),
+            toolState = state,
             toolImages = result.images,
             toolTranscription = transcription,
+            toolConnectMs = current.toolConnectMs,
+            toolExecMs = execMs,
         )
         segments[index] = completed
         return CompletedToolCall(
@@ -245,7 +278,7 @@ internal class GenerationToolOverlay(
             data = ToolCallData(
                 toolName = call.name,
                 arguments = call.arguments,
-                result = clipped,
+                result = resultForModel,
                 signature = call.signature,
                 toolCallId = call.id,
                 resultImages = result.images,
@@ -408,7 +441,12 @@ internal class GenerationToolBatchEffectExecutor(
                 callbacks.publish(false)
                 callbacks.onPublishedAt(nowMs())
             }
-            val completed = overlay.complete(call, result, transcription = transcription)
+            val completed = overlay.complete(
+                call,
+                result,
+                transcription = transcription,
+                nowMs = nowMs(),
+            )
             completedSegments += completed.segment
             results += completed.data
             callbacks.publish(false)

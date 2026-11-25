@@ -38,10 +38,12 @@ import com.newoether.agora.data.replaceCustomProviderIdsForDisplay
 import com.newoether.agora.model.ChatMessage
 import com.newoether.agora.model.MessageStatus
 import com.newoether.agora.model.isContextCompact
+import com.newoether.agora.model.isProcessCompletionNotice
 import com.newoether.agora.model.Participant
 import com.newoether.agora.model.StableModelAliases
 import com.newoether.agora.model.ToolCallDisplayModes
 import com.newoether.agora.model.ThinkingSegmentDisplayModes
+import com.newoether.agora.util.PathReferenceTokens
 import com.newoether.agora.ui.chat.ConversationSearchMatch
 import com.newoether.agora.ui.chat.conversationSearchMatchRanges
 import com.newoether.agora.ui.common.LocalAgoraHaptics
@@ -108,6 +110,7 @@ internal fun MessageItem(
     onRegenerate: (String) -> Boolean = { false },
     onFork: (String) -> Unit = {},
     onShare: (String) -> Unit = {},
+    onToggleCompactLock: (String, Boolean) -> Unit = { _, _ -> },
     deleteTargetMessageId: String = message.id,
     onRecompact: (String) -> Unit = {},
     onDelete: (String) -> Unit = {},
@@ -123,15 +126,25 @@ internal fun MessageItem(
     onToggleSelection: () -> Unit = {},
     onLayoutMutationStarted: (String) -> Unit = {},
     onLayoutMutationSettled: (String) -> Unit = {},
-    thoughtExpandedStates: SnapshotStateMap<String, Boolean> = remember { mutableStateMapOf() }
+    thoughtExpandedStates: SnapshotStateMap<String, Boolean> = remember { mutableStateMapOf() },
+    loadMessageDetail: suspend (String) -> ChatMessage? = { null },
 ) {
-    val displayMessage = remember(message, customProviders) {
-        message.forDisplay(customProviders)
+    var showSegmentDetail by remember { mutableStateOf(false) }
+    val thoughtExpanded = thoughtExpandedStates[message.id] == true
+    val shouldHydrateThoughts = !isStreaming && (showSegmentDetail || thoughtExpanded)
+    val loadedDetail by produceState<ChatMessage?>(
+        initialValue = null,
+        message.id,
+        shouldHydrateThoughts,
+    ) {
+        value = if (shouldHydrateThoughts) loadMessageDetail(message.id) else null
+    }
+    val displayMessage = remember(message, loadedDetail, customProviders) {
+        (loadedDetail ?: message).forDisplay(customProviders)
     }
     val displayActionCopyText = remember(actionCopyText, customProviders) {
         actionCopyText?.let { replaceCustomProviderIdsForDisplay(it, customProviders) }
     }
-    var showSegmentDetail by remember { mutableStateOf(false) }
     var detailUsesExplicitBackHandler by remember { mutableStateOf(false) }
     var selectedSegmentIndex by remember { mutableIntStateOf(-1) }
     var selectedSegmentIndices by remember { mutableStateOf<List<Int>>(emptyList()) }
@@ -285,6 +298,14 @@ internal fun MessageItem(
                             onDelete = { showDeleteConfirm = true },
                         )
                     }
+                } else if (message.isProcessCompletionNotice()) {
+                    GenerationTerminalText(
+                        text = stringResource(R.string.background_process_completed),
+                        modifier = Modifier
+                            .then(contextAlpha)
+                            .padding(top = 4.dp, bottom = 4.dp),
+                        fillWidth = true,
+                    )
                 } else if (message.participant == Participant.USER) {
                     UserMessageBubble(
                         message = displayMessage,
@@ -343,6 +364,9 @@ internal fun MessageItem(
                         onRegenerate = onRegenerate,
                         onFork = { onFork(message.id) },
                         onShare = { onShare(message.id) },
+                        onToggleCompactLock = {
+                            onToggleCompactLock(message.id, !message.compactLocked)
+                        },
                         onMediaClick = onMediaClick,
                         onShowInfo = { showInfoDialog = true },
                         onShowDelete = { showDeleteConfirm = true },
@@ -393,7 +417,7 @@ internal fun MessageItem(
             markdownRenderContext = thoughtMarkdownRenderContext,
             onMediaClick = onMediaClick,
             titleOverride = stringResource(R.string.select_text),
-            directSelectableTextContent = displayMessage.text,
+            directSelectableTextContent = PathReferenceTokens.expandForSend(displayMessage.text),
             onDismiss = { showUserTextSelection = false },
         )
     }

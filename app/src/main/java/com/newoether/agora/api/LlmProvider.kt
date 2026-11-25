@@ -37,8 +37,8 @@ sealed class StreamEvent {
      * Full accumulated snapshot of a tool call while the model is still writing it.
      *
      * [streamKey] is stable even when a compatible provider sends the protocol [id] in a later
-     * delta. UI code keys the live segment by [streamKey], then replaces its protocol id when the
-     * matching [ToolCallRequest] completes.
+     * delta. Local execution keys the live segment by [streamKey] only when that call actually
+     * starts; streaming names/args stay in the authorized batch until then.
      */
     data class ToolCallUpdate(
         val streamKey: String,
@@ -75,6 +75,9 @@ sealed class StreamEvent {
     /** Emitted before one provider retry. [attempt] is the 1-based retry number, while
      *  [maxAttempts] is the retry budget and excludes the initial request. */
     data class Retrying(val attempt: Int, val maxAttempts: Int) : StreamEvent()
+
+    /** Semantic end of one provider stream. Bookkeeping only; the stop reason is kept for the turn. */
+    data class Completion(val stopReason: String?) : StreamEvent()
 }
 
 data class ProviderConfig(
@@ -101,7 +104,8 @@ data class ProviderConfig(
     val maxTokens: Int? = null,
     val topP: Float? = null,
     val frequencyPenalty: Float? = null,
-    val presencePenalty: Float? = null
+    val presencePenalty: Float? = null,
+    val apiResponseCapture: ApiResponseCapture? = null,
 )
 
 @Serializable

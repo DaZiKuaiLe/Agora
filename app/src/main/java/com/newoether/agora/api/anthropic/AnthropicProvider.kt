@@ -397,7 +397,12 @@ class AnthropicProvider(
                 // single flaky connection became a hard failure. Nothing has streamed at this
                 // point, so replaying is always safe.
                 val handle = try {
-                    HttpClient.streamPost(url, requestBodyJson, headers)
+                    HttpClient.streamPost(
+                        url,
+                        requestBodyJson,
+                        headers,
+                        responseCapture = config.apiResponseCapture,
+                    )
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -521,6 +526,7 @@ class AnthropicProvider(
                         delay(retryDelayMs)
                     } else {
                         done = true
+                        emit(StreamEvent.Completion(termination.stopReason))
                         termination.toError(name)?.let { emit(StreamEvent.Error(it)) }
                     }
                 } else {

@@ -8,16 +8,15 @@ Depending on settings, build, and provider support, tools include:
 
 - web search
 - image generation
-- active and saved memory
 - past-conversation search
 - MCP servers
 - Tasks and Loops automation
-- remote Conch/SSH commands, durable job management, file operations, and `view_image`
+- SSH and local commands, process-scoped `start_*_process` tools, SFTP read/write/edit, one-level `list_*_files`, host-side `glob_*` / `grep_*`, `read_image`, and `open_file`. Ask mode (composer toggle, on by default) keeps only read/search tools.
 - the F-Droid Alpine sandbox
 
 ## Permissions and defaults
 
-Web search, active memory, saved memory, past-conversation access, and the global shell permission are enabled by default. Shell calls still require a configured device, and its confirmation policy remains authoritative. Automation tools are disabled by default. MCP availability is controlled per server and per tool.
+Web search, past-conversation access, and the global shell permission are enabled by default. Active memory is background text in the system prompt, not a model-callable tool; clearing it in Settings → Memory stops sending it. Shell calls still require a configured device, and its confirmation policy remains authoritative. Automation tools are disabled by default. MCP availability is controlled per server and per tool.
 
 Tool calls and results become part of the conversation protocol and can be sent to the selected model on subsequent passes. External tools receive the arguments needed for their call. Review each server and permission before enabling it.
 

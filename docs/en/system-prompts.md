@@ -19,3 +19,5 @@ Current variables include `{time}`, `{date}`, `{sent_time}`, `{sent_date}`, `{ac
 Prompts can be edited, duplicated, deleted, and marked as the global default. A conversation can inherit that default or select another saved prompt.
 
 The built-in Default template is defined by the app and can change with product behavior; it is not one of several fictional category libraries.
+
+On each request Agora prepends an uneditable runtime-policy block (how context compression, the session digest, and detail-store ids work) **before** your system prompt. It shows up as SYSTEM in View Context and stays present even if you switch to a custom prompt. Persona and tool-usage guidance still belong in your own prompt.

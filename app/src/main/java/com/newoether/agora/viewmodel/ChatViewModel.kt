@@ -22,9 +22,7 @@ import com.newoether.agora.data.SkillManager
 import com.newoether.agora.data.PredefinedVariables
 import com.newoether.agora.data.forDisplay
 import com.newoether.agora.data.replaceCustomProviderIdsForDisplay
-
 import com.newoether.agora.data.ShellDeviceConfig
-
 import com.newoether.agora.data.local.ChatEntity
 import com.newoether.agora.data.repository.ConversationRepository
 import com.newoether.agora.data.repository.SettingsRepository
@@ -41,6 +39,7 @@ import com.newoether.agora.service.AgoraForegroundService
 import com.newoether.agora.util.DebugLog
 import com.newoether.agora.util.PdfPageRenderer
 import com.newoether.agora.util.SnackbarEvent
+import com.newoether.agora.util.SshAuth
 import com.newoether.agora.util.UpdateChecker
 import com.newoether.agora.util.UpdateInfo
 import kotlinx.coroutines.Dispatchers
@@ -63,7 +62,7 @@ class ChatViewModel(
     private val settingsManager: com.newoether.agora.data.SettingsManager,
     val memoryManager: MemoryManager,
     val skillManager: SkillManager,
-    private val appContext: Context,
+    internal val appContext: Context,
     private val sandboxFactory: SandboxManagerFactory? = null,
     // All injected via AppContainer/ChatViewModelFactory — the single construction site.
     autoBackupManager: AutoBackupManager,
@@ -80,6 +79,7 @@ class ChatViewModel(
     private val automationExecutionGate: com.newoether.agora.automation.AutomationExecutionGate,
     private val generationRegistry: ConversationStateRegistry,
     private val shellConfirmation: ShellConfirmationController,
+    private val allFilesAccess: AllFilesAccessController,
     private val mcpRegistry: com.newoether.agora.mcp.McpRegistry,
     private val mcpToolProvider: com.newoether.agora.tool.McpToolProvider,
     private val taskExecutionEngine: com.newoether.agora.automation.TaskExecutionEngine,
@@ -258,6 +258,8 @@ class ChatViewModel(
             // Gate lives in RagManager.indexMessageForRag (autoCacheEnabled + active model).
             gm.onMessagePersisted = { messageId, text -> ragManager.indexMessageForRag(messageId, text) }
             gm.onConfirmShellCommand = { server, summary -> shellConfirmation.confirm(server, summary) }
+            gm.onRequestAllFilesAccess = { reason -> allFilesAccess.request(reason) }
+            gm.onSshShellDetected = settings::rememberSshDetectedShell
         }
     }
     private val semanticSearchService by lazy {
@@ -369,6 +371,13 @@ class ChatViewModel(
 
     fun setShellConfirmEnabled(enabled: Boolean) = shellConfirmation.setEnabled(enabled)
 
+    val pendingAllFilesAccessRequest: StateFlow<AllFilesAccessController.PendingRequest?>
+        get() = allFilesAccess.pendingRequest
+
+    fun dismissAllFilesAccessRequest() = allFilesAccess.dismiss()
+
+    fun resolveAllFilesAccessAfterSettings() = allFilesAccess.resolveAfterSettingsAttempt()
+
     // ── Tasks (automation) ────────────────────────────────────
     /** Saved automation tasks; CRUD + run-now delegate to the app-scoped [taskManager]. */
     val tasks: StateFlow<List<com.newoether.agora.data.local.TaskEntity>> get() = taskManager.tasks
@@ -431,7 +440,7 @@ class ChatViewModel(
         viewModelScope.launch { loopManager.stopLoop(id) }
     }
 
-    private val conversationUi = ConversationUiStateAssembler(
+    internal val conversationUi = ConversationUiStateAssembler(
         conversations = convRepo,
         registry = generationRegistry,
         executionCoordinator = conversationExecutionCoordinator,
@@ -520,12 +529,11 @@ class ChatViewModel(
     fun clearPreviews() = mediaPreview.clear()
 
     val messages: StateFlow<List<ChatMessage>> = conversationUi.messages
+    val sendTokenCache: StateFlow<SendTokenCache> = conversationUi.sendTokenCache
     val totalTokens: StateFlow<Int> = conversationUi.totalTokens
     val isLoading: StateFlow<Boolean> = conversationUi.isLoading
-    val generatingInConversationId: StateFlow<String?> =
-        conversationUi.generatingInConversationId
-    val generationSnapshot: StateFlow<ConversationGenerationSnapshot> =
-        conversationUi.generationSnapshot
+    val generatingInConversationId: StateFlow<String?> = conversationUi.generatingInConversationId
+    val generationSnapshot: StateFlow<ConversationGenerationSnapshot> = conversationUi.generationSnapshot
 
     /** Content-free runtime history used only by the explicitly unlocked Developer inspector. */
     internal fun developerRuntimeTraceSnapshot(
@@ -533,15 +541,13 @@ class ChatViewModel(
     ): List<com.newoether.agora.model.ConversationRuntimeTraceEntry> =
         generationRegistry.get(conversationId)?.runtimeTraceSnapshot().orEmpty()
 
-    /** Per-conversation generation state registry. Each conversation owns an independent
-     *  ConversationGenerationState; the global loading/render mirrors
-     *  below are now a MIRROR of whichever conversation is currently open (see init collectors). */
+    /** Per-open-conversation generation registry; UI mirrors follow the selected conversation. */
     private val generationCallbackOwner = Any()
     private val foregroundAutomationBridge by lazy {
         ForegroundAutomationBridgeController(
             currentConversationId = currentConversationId,
             send = generationController::sendMessageFromAutomationAwaitingCompletion,
-            loadMessages = convRepo::getMessagesForConversationSnapshot,
+            loadMessage = convRepo::getMessage,
             attach = taskExecutionEngine::attachForegroundSendBridge,
             detach = taskExecutionEngine::detachForegroundSendBridge,
         )
@@ -620,21 +626,30 @@ class ChatViewModel(
     }
 
     private val _pendingConversationSettings = MutableStateFlow<ConversationToolState?>(null)
+    private val _batchCompactingIds = MutableStateFlow<Set<String>>(emptySet())
+    private val _batchCompactProgressById =
+        MutableStateFlow<Map<String, CompactBatchProgress>>(emptyMap())
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    val isCompacting: StateFlow<Boolean> = currentConversationId
-        .flatMapLatest { conversationId ->
-            if (conversationId == null) flowOf(false)
-            else generationRegistry.getOrCreate(conversationId).streamingMessage
-                .map { message -> message?.isContextCompact() == true }
-        }
+    val isCompacting: StateFlow<Boolean> = combine(
+        currentConversationId,
+        _batchCompactingIds,
+        currentConversationId.flatMapLatest { id ->
+            if (id == null) flowOf(false)
+            else generationRegistry.getOrCreate(id).streamingMessage
+                .map { it?.isContextCompact() == true }
+        },
+    ) { id, batchIds, capsule -> (id != null && id in batchIds) || capsule }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val compactBatchProgress: StateFlow<CompactBatchProgress?> = combine(
+        currentConversationId,
+        _batchCompactProgressById,
+    ) { id, map -> id?.let { map[it] } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val compactPreview: StateFlow<String> = currentConversationId
-        .flatMapLatest { conversationId ->
-            if (conversationId == null) flowOf("")
-            else generationRegistry.getOrCreate(conversationId).streamingMessage
-                .map { message ->
-                    message?.takeIf(ChatMessage::isContextCompact)?.text.orEmpty()
-                }
+        .flatMapLatest { id ->
+            if (id == null) flowOf("")
+            else generationRegistry.getOrCreate(id).streamingMessage
+                .map { it?.takeIf(ChatMessage::isContextCompact)?.text.orEmpty() }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val pendingConversationSettings: StateFlow<ConversationToolState?> = _pendingConversationSettings.asStateFlow()
@@ -668,27 +683,29 @@ class ChatViewModel(
             requestBuilder = requestBuilder,
             generationManager = { generationManager },
             toBranchMessage = { it.toUiChatMessage(appContext) },
+            detailStore = { generationManager.toolExecutorDetailStore() },
+            appContext = appContext,
             newChatSystemPromptId = { _pendingSystemPromptId.value },
         )
     }
 
     internal suspend fun projectConversationContext(
-        conversationId: String?,
-        selectedModelId: String,
-        tokenBudget: Int,
-    ): ConversationContextProjection = contextProjector.project(
-        conversationId,
-        selectedModelId,
-        tokenBudget,
-    )
+        conversationId: String?, selectedModelId: String, tokenBudget: Int,
+        computeRetainedIds: Boolean = true,
+    ) = contextProjector.project(conversationId, selectedModelId, tokenBudget, computeRetainedIds)
 
-    private val generationController by lazy {
+    internal suspend fun previewConversationContextDetail(
+        conversationId: String?, selectedModelId: String, tokenBudget: Int,
+    ) = contextProjector.detail(conversationId, selectedModelId, tokenBudget)
+
+    internal val generationController by lazy {
         MessageGenerationController(
             viewModelScope = viewModelScope,
             application = getApplication(),
             appContext = appContext,
             convRepo = convRepo,
             settings = settings,
+            memoryManager = memoryManager,
             registry = generationRegistry,
             generationManagerProvider = { generationManager },
             requestBuilder = requestBuilder,
@@ -737,8 +754,31 @@ class ChatViewModel(
             onTreeMutationFailed = selectionController::failTreeMutation,
             regenerationTransitions = regenerationTransitions,
             pauseConversationTasks = { conversationId -> loopManager.stopLoop(conversationId) },
-        )
+            onBatchCompactingChanged = { conversationId, compacting ->
+                _batchCompactingIds.update { current ->
+                    if (compacting) current + conversationId else current - conversationId
+                }
+                if (!compacting) {
+                    _batchCompactProgressById.update { it - conversationId }
+                }
+            },
+            onBatchCompactProgress = { conversationId, progress ->
+                _batchCompactProgressById.update { it + (conversationId to progress) }
+            },
+        ).also { controller ->
+            generationManager.onTurnCompleted = { conversationId ->
+                controller.scheduleTurnIntegration(conversationId)
+                controller.scheduleArchivePrecompress(conversationId)
+            }
+        }
     }
+    val pendingAutomaticCompactPrompt get() = generationController.pendingAutomaticCompactPrompt
+    val pendingDigestUpdatePrompt get() = generationController.pendingDigestUpdatePrompt
+    val pendingCompactFormatPrompt get() = generationController.pendingCompactFormatPrompt
+    val digestIntegrityAlert get() = generationController.digestIntegrityAlert
+    fun dismissDigestIntegrityAlert() = generationController.dismissDigestIntegrityAlert()
+    val compactTurnTooLargeAlert get() = generationController.compactTurnTooLargeAlert
+    fun dismissCompactTurnTooLargeAlert() = generationController.dismissCompactTurnTooLargeAlert()
     private val composerSendAdapter by lazy {
         ComposerSendAdapter(
             send = generationController::sendMessage,
@@ -832,8 +872,8 @@ class ChatViewModel(
     }
 
     suspend fun verifySshHostKey(
-        host: String, port: Int, user: String, password: String
-    ): Result<Pair<String, String>> = sshHostKeyVerifier.verify(host, port, user, password)
+        host: String, port: Int, user: String, auth: SshAuth
+    ): Result<Pair<String, String>> = sshHostKeyVerifier.verify(host, port, user, auth)
 
     suspend fun testRemoteEmbedding(
         modelName: String,
@@ -856,6 +896,10 @@ class ChatViewModel(
     fun shareGeneration(assistantMessageId: String) =
         conversationForkShareController.shareGeneration(assistantMessageId)
 
+    fun setCompactLocked(messageId: String, locked: Boolean) {
+        viewModelScope.launch { convRepo.setCompactLocked(messageId, locked) }
+    }
+
     fun shareMessages(messageIds: Set<String>) =
         conversationForkShareController.shareMessages(messageIds)
 
@@ -873,60 +917,22 @@ class ChatViewModel(
 
     fun deleteConversation(id: String) = conversationLifecycleController.delete(id)
 
-    /**
-     * Deletes a message and all its descendants (BFS cascade).
-     * Hidden tool_/result_ children are included in the cascade.
-     * Attachments, embeddings, and branch selections are cleaned up.
-     * Returns the count of deleted messages (for the confirmation dialog).
-     */
-    suspend fun compactContextManual(
-        model: String,
-        prompt: String,
-        retainLogicalMessages: Int,
-    ): CompactResult = generationController.compactManual(
-        CompactRequest(model, prompt, retainLogicalMessages),
-    )
+    fun startContextCompactManual(model: String, fullRecompact: Boolean = false) =
+        launchContextCompactManual(model, fullRecompact)
 
-    /** Owns manual Compact beyond the lifetime of the dialog/composition that initiated it. */
-    fun startContextCompactManual(
-        model: String,
-        prompt: String,
-        retainMessages: Int,
-    ) {
-        viewModelScope.launch {
-            val result = try {
-                compactContextManual(model, prompt, retainMessages)
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                CompactResult.Failed(CompactFailureReason.GENERIC)
-            }
-            if (result is CompactResult.Failed) emitSnackbar(compactFailureMessage(appContext, result))
-        }
-    }
+    fun confirmAutomaticCompactSend() = generationController.confirmAutomaticCompactSend()
 
-    /** Re-runs Compact for one terminal Compact pill while preserving its graph position. */
-    fun startContextRecompact(messageId: String) {
-        val model = settings.contextCompactModel.value
-            ?.takeIf(String::isNotBlank)
-            ?: currentActiveModel.value
-        val request = CompactRequest(
-            model = model,
-            prompt = settings.contextCompactPrompt.value,
-            retainLogicalMessages = settings.contextCompactRetainCount.value,
-            replaceMessageId = messageId,
-        )
-        viewModelScope.launch {
-            val result = try {
-                generationController.compactManual(request)
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                CompactResult.Failed(CompactFailureReason.GENERIC)
-            }
-            if (result is CompactResult.Failed) emitSnackbar(compactFailureMessage(appContext, result))
-        }
-    }
+    fun skipAutomaticCompactSend() = generationController.skipAutomaticCompactSend()
+
+    fun confirmDigestUpdateSend() = generationController.confirmDigestUpdateSend()
+
+    fun abortDigestUpdateSend() = generationController.abortDigestUpdateSend()
+
+    fun confirmCompactFormatSend() = generationController.confirmCompactFormatSend()
+
+    fun abortCompactFormatSend() = generationController.abortCompactFormatSend()
+
+    fun startContextRecompact(messageId: String) = launchContextRecompact(messageId)
 
     fun deleteMessage(messageId: String): Int {
         if (isSwitching.value) return 0
@@ -940,10 +946,13 @@ class ChatViewModel(
     )
     val queuedSends: StateFlow<List<QueuedSend>> get() = currentRuntimeFacade.queuedSends
     val isStopping: StateFlow<Boolean> get() = currentRuntimeFacade.isStopping
+    val cooperativeStopRequested: StateFlow<Boolean> get() = currentRuntimeFacade.cooperativeStopRequested
 
     fun removeQueuedSend(id: String) = currentRuntimeFacade.removeQueuedSend(id)
 
-    fun stopGeneration() = generationStopAdapter.stopVisibleConversation()
+    fun stopGeneration() = generationStopAdapter.requestVisibleConversationStop()
+
+    fun forceStopGeneration() = generationStopAdapter.stopVisibleConversation()
 
     fun regenerate(messageId: String): Boolean = generationController.regenerate(messageId)
 

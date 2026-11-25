@@ -1,16 +1,9 @@
 package com.newoether.agora.viewmodel
 
-import com.newoether.agora.api.util.splitContextForCompactRetention
+import android.content.Context
 import com.newoether.agora.data.BuiltInPrompts
-import com.newoether.agora.data.repository.ConversationRepository
-import com.newoether.agora.model.ChatMessage
-import com.newoether.agora.model.MessageGenerationBoundaryResolver
-import com.newoether.agora.model.MessageStatus
-import com.newoether.agora.model.isContextCompact
-import com.newoether.agora.model.isSuccessfulContextCompact
-import com.newoether.agora.util.Constants
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 internal data class StandardCompactLaunch(
@@ -19,64 +12,133 @@ internal data class StandardCompactLaunch(
 )
 
 /**
- * Prepares Compact-specific presentation and generation parameters, then delegates the complete
- * durable Run, stream, Stop, finalization, queue, and recovery lifecycle to ordinary generation.
+ * Summary-batch Compact via [BatchCompactEngine] (no capsule message).
+ * [StandardCompactLaunch.messageId] is the parent used to continue generation after auto-compact.
  */
 internal class ConversationCompactController(
-    private val conversations: ConversationRepository,
-    private val operation: ContextCompactOperation,
+    private val batchEngine: BatchCompactEngine,
     private val requestBuilder: GenerationRequestBuilder?,
-    private val generationManagerProvider: () -> GenerationManager,
-    private val continuationLauncher: () -> StandardGenerationContinuationLauncher,
     private val onCompactStarted: (conversationId: String, messageId: String) -> Unit = { _, _ -> },
+    private val onBatchCompactingChanged: (conversationId: String, compacting: Boolean) -> Unit =
+        { _, _ -> },
+    private val onBatchCompactProgress: (conversationId: String, progress: CompactBatchProgress) -> Unit =
+        { _, _ -> },
+    private val onDigestIntegrity: (conversationId: String, issues: List<DigestIntegrityIssue>) -> Unit =
+        { _, _ -> },
+    private val appContext: Context? = null,
 ) {
     suspend fun automaticNeeded(
         conversationId: String,
         config: AutomaticCompactConfig,
-    ): Boolean = operation.automaticNeeded(conversationId, config)
+    ): Boolean = batchEngine.automaticNeeded(conversationId, config)
+
+    suspend fun digestKnowledgeStale(conversationId: String): Boolean =
+        batchEngine.digestKnowledgeStale(conversationId)
+
+    suspend fun compactFormatStale(conversationId: String): Boolean =
+        batchEngine.compactFormatStale(conversationId)
+
+    suspend fun archiveFullRecompact(
+        conversationId: String,
+        config: AutomaticCompactConfig,
+        onProgress: ((CompactBatchProgress) -> Unit)? = null,
+    ): CompactResult = batchEngine.ensureFormalBatches(
+        conversationId = conversationId,
+        config = config,
+        fullRecompact = true,
+        onProgress = onProgress,
+        appContext = appContext,
+    ).alsoReportIntegrity(conversationId)
+
+    suspend fun startFullRecompactBeforeSend(
+        conversationId: String,
+        config: AutomaticCompactConfig,
+    ): CompactResult {
+        onBatchCompactingChanged(conversationId, true)
+        return try {
+            val result = batchEngine.ensureFormalBatches(
+                conversationId = conversationId,
+                config = config,
+                fullRecompact = true,
+                onProgress = { onBatchCompactProgress(conversationId, it) },
+                appContext = appContext,
+            )
+            if (result is CompactResult.Created) {
+                onCompactStarted(conversationId, result.messageId)
+            }
+            result.alsoReportIntegrity(conversationId)
+        } finally {
+            onBatchCompactingChanged(conversationId, false)
+        }
+    }
+
+    suspend fun refreshConversationDigest(
+        conversationId: String,
+        config: AutomaticCompactConfig,
+    ): CompactResult {
+        onBatchCompactingChanged(conversationId, true)
+        return try {
+            val result = batchEngine.refreshConversationDigest(conversationId, config)
+            if (result is CompactResult.Created) {
+                onCompactStarted(conversationId, result.messageId)
+            }
+            result.alsoReportIntegrity(conversationId)
+        } finally {
+            onBatchCompactingChanged(conversationId, false)
+        }
+    }
 
     suspend fun startAutomaticBeforeSend(
         conversationId: String,
         config: AutomaticCompactConfig,
-        state: ConversationGenerationState,
+        @Suppress("UNUSED_PARAMETER") state: ConversationGenerationState,
     ): CompactResult {
-        if (!operation.automaticNeeded(conversationId, config)) {
-            return CompactResult.NotNeeded
+        onBatchCompactingChanged(conversationId, true)
+        return try {
+            val result = batchEngine.ensureFormalBatches(
+                conversationId = conversationId,
+                config = config,
+                onProgress = { onBatchCompactProgress(conversationId, it) },
+            )
+            if (result is CompactResult.Created) {
+                onCompactStarted(conversationId, result.messageId)
+            }
+            result.alsoReportIntegrity(conversationId)
+        } finally {
+            onBatchCompactingChanged(conversationId, false)
         }
-        val snapshot = automaticSnapshot(conversationId, config)
-        return launch(
-            conversationId = conversationId,
-            request = config.request,
-            snapshot = snapshot,
-            state = state,
-            awaitCompletion = false,
-        ).second
     }
 
     suspend fun startAutomaticStandard(
         conversationId: String,
         config: AutomaticCompactConfig,
         state: ConversationGenerationState,
+        continuationParentId: String,
     ): StandardCompactLaunch? {
-        if (!operation.automaticNeeded(conversationId, config)) return null
-        val snapshot = automaticSnapshot(conversationId, config)
-        return launch(
-            conversationId = conversationId,
-            request = config.request,
-            snapshot = snapshot,
-            state = state,
-            awaitCompletion = false,
-        ).first
+        if (!batchEngine.automaticNeeded(conversationId, config)) return null
+        val job = state.scope.launch {
+            onBatchCompactingChanged(conversationId, true)
+            try {
+                batchEngine.ensureFormalBatches(
+                    conversationId = conversationId,
+                    config = config,
+                    onProgress = { onBatchCompactProgress(conversationId, it) },
+                ).alsoReportIntegrity(conversationId)
+            } finally {
+                onBatchCompactingChanged(conversationId, false)
+            }
+        }
+        onCompactStarted(conversationId, continuationParentId)
+        return StandardCompactLaunch(continuationParentId, job)
     }
 
     suspend fun manual(
         conversationId: String,
         request: CompactRequest,
-        state: ConversationGenerationState,
+        @Suppress("UNUSED_PARAMETER") state: ConversationGenerationState,
     ): CompactResult {
         if (request.model.isBlank()) return CompactResult.Failed(CompactFailureReason.SELECT_MODEL)
-        if (request.prompt.isBlank()) return CompactResult.Failed(CompactFailureReason.EMPTY_PROMPT)
-        if (request.retainLogicalMessages < 0) {
+        if (request.retainLogicalMessages !in 2..32) {
             return CompactResult.Failed(CompactFailureReason.INVALID_RETAIN_COUNT)
         }
         val snapshotRunId = "compact_preflight_${UUID.randomUUID()}"
@@ -87,194 +149,54 @@ internal class ConversationCompactController(
                 conversationId = conversationId,
                 runId = snapshotRunId,
                 modelId = request.model,
-            ).forCompact(request)
+            )
         } catch (_: Exception) {
-            return CompactResult.Failed(
-                CompactFailureReason.SETUP_FAILED,
-            )
+            return CompactResult.Failed(CompactFailureReason.SETUP_FAILED)
         }
-        return launch(
-            conversationId = conversationId,
-            request = request,
-            snapshot = snapshot,
-            state = state,
-            awaitCompletion = true,
-        ).second
+        val config = snapshot.automaticCompact.copy(
+            enabled = true,
+            request = request.copy(prompt = BuiltInPrompts.CONTEXT_COMPACT_SYSTEM),
+        )
+        if (!config.configured || config.provider == null) {
+            return CompactResult.Failed(CompactFailureReason.SETUP_UNAVAILABLE)
+        }
+        onBatchCompactingChanged(conversationId, true)
+        return try {
+            // Manual: incremental formal compress. Full recompact only when requested
+            // (legacy capsule sessions / explicit recompact-all).
+            val result = batchEngine.ensureFormalBatches(
+                conversationId = conversationId,
+                config = config,
+                fullRecompact = request.fullRecompact,
+                onProgress = { onBatchCompactProgress(conversationId, it) },
+                appContext = if (request.fullRecompact) appContext else null,
+            )
+            if (result is CompactResult.Created) {
+                onCompactStarted(conversationId, result.messageId)
+            }
+            result.alsoReportIntegrity(conversationId)
+        } finally {
+            onBatchCompactingChanged(conversationId, false)
+        }
     }
 
-    private suspend fun launch(
-        conversationId: String,
-        request: CompactRequest,
-        snapshot: GenerationAdmissionSnapshot,
-        state: ConversationGenerationState,
-        awaitCompletion: Boolean,
-    ): Pair<StandardCompactLaunch?, CompactResult> {
-        val loadedMessages = conversations.getMessagesForConversationSnapshot(conversationId)
-        val selectedChildren = conversations.restoreBranchSelections(conversationId)
-        val selectedPath = ConversationUiState.resolvePath(
-            allMessages = loadedMessages.map { it.toUiChatMessage { text -> text } },
-            streamingMsg = null,
-            selectedChildren = selectedChildren,
-        )
-        val target = request.replaceMessageId?.let { targetId ->
-            val targetBoundary = MessageGenerationBoundaryResolver.containing(
-                selectedPath,
-                targetId,
-            )
-            val targetMessage = targetBoundary
-                ?.messages
-                ?.firstOrNull { it.id == targetId }
-                ?.takeIf(ChatMessage::isContextCompact)
-                ?.takeIf {
-                    it.status in setOf(
-                        MessageStatus.SUCCESS,
-                        MessageStatus.ERROR,
-                        MessageStatus.STOPPED,
-                    )
-                }
-            targetMessage
-                ?.let { loadedMessages.find { entity -> entity.id == it.id } }
-                ?: return null to CompactResult.Failed(
-                    CompactFailureReason.NOT_READY_TO_RECOMPACT,
-                )
-        }
-        val parent = target?.parentId
-            ?.let { parentId -> loadedMessages.find { it.id == parentId } }
-            ?: selectedPath.lastOrNull()
-                ?.let { selected -> loadedMessages.find { it.id == selected.id } }
-            ?: return null to CompactResult.NotNeeded
-        if (target != null && target.parentId != parent.id) {
-            return null to CompactResult.Failed(CompactFailureReason.BOUNDARY_DISAPPEARED)
-        }
-
-        val generationSnapshot = snapshot.forCompact(request)
-        val providerPath = generationManagerProvider().buildApiPath(
-            GenerationApiPathRequest(
-                parentId = parent.id,
-                conversationId = conversationId,
-                config = generationSnapshot.config,
-                context = generationSnapshot.context,
-                loadedMessages = loadedMessages,
-            ),
-        )
-        val transform = retainedTextTransform(
-            path = providerPath.messages,
-            retainLogicalMessages = request.retainLogicalMessages,
-        )
-        val messageId = target?.id ?: Constants.COMPACT_MSG_PREFIX + UUID.randomUUID()
-        val launched = continuationLauncher().launch(
-            StandardGenerationContinuationRequest(
-                conversationId = conversationId,
-                parentMessageId = parent.id,
-                snapshot = generationSnapshot,
-                modelMessageId = messageId,
-                replacementMessageId = target?.id,
-                callerTag = if (target == null) "compact" else "recompact",
-                queueDrainRequiresSuccess = true,
-                transformFinalText = transform,
-            ),
-            state,
-        ) ?: return null to CompactResult.Failed(CompactFailureReason.GENERATION_BUSY)
-
-        if (!launched.started.await()) {
-            launched.job.join()
-            return null to CompactResult.Failed(CompactFailureReason.GENERATION_NOT_STARTED)
-        }
-        onCompactStarted(conversationId, messageId)
-        val compactLaunch = StandardCompactLaunch(messageId, launched.job)
-        if (!awaitCompletion) return compactLaunch to CompactResult.Created(messageId)
-
-        try {
-            launched.job.join()
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        }
-        val settled = conversations.getMessagesForConversationSnapshot(conversationId)
-            .find { it.id == messageId }
-            ?: return compactLaunch to CompactResult.Failed(CompactFailureReason.MESSAGE_DISAPPEARED)
-        val result = when (settled.status) {
-            MessageStatus.SUCCESS -> CompactResult.Created(messageId)
-            MessageStatus.STOPPED -> CompactResult.Stopped(messageId)
-            MessageStatus.ERROR -> CompactResult.Failed(
-                reason = CompactFailureReason.GENERIC,
-                externalDetail = settled.toUiChatMessage { text -> text }
-                    .segments
-                    .orEmpty()
-                    .lastOrNull { segment ->
-                        segment.type == "error" && segment.content.isNotBlank()
-                    }
-                    ?.content,
-                messageId = messageId,
-            )
-            else -> CompactResult.Failed(
-                reason = CompactFailureReason.GENERIC,
-                messageId = messageId,
-            )
-        }
-        return compactLaunch to result
-    }
-
-    private fun automaticSnapshot(
+    fun schedulePrecompress(
         conversationId: String,
         config: AutomaticCompactConfig,
-    ): GenerationAdmissionSnapshot = GenerationAdmissionSnapshot(
-        conversationId = conversationId,
-        runId = "compact_preflight_${UUID.randomUUID()}",
-        selectedModelId = config.request.model,
-        config = config.generationConfig,
-        context = config.generationContext,
-        providerInstances = config.providerInstances,
-        automaticCompact = config.copy(enabled = false),
-        titleGenerationEnabled = false,
-    ).forCompact(config.request)
-
-    private fun GenerationAdmissionSnapshot.forCompact(
-        request: CompactRequest,
-    ): GenerationAdmissionSnapshot = copy(
-        config = config.copy(
-            effectiveSystemPrompt = request.prompt,
-            initialUserPrompt = BuiltInPrompts.CONTEXT_COMPACT_USER,
-            codeExecutionEnabled = false,
-            googleSearchEnabled = false,
-            openAiWebSearchEnabled = false,
-            thinkingEnabled = false,
-        ),
-        context = context.copy(
-            accessSavedMemories = false,
-            accessActiveMemory = false,
-            skillReadAccess = false,
-            skillModifyAccess = false,
-            accessPastConversations = false,
-            webSearchEnabled = false,
-            imageGenEnabled = false,
-            automationToolsEnabled = false,
-            shellEnabled = false,
-            sandboxEnabled = false,
-            sandboxSharedStorageEnabled = false,
-        ),
-        automaticCompact = automaticCompact.copy(enabled = false),
-        titleGenerationEnabled = false,
-    )
-
-    private fun retainedTextTransform(
-        path: List<ChatMessage>,
-        retainLogicalMessages: Int,
-    ): (String, MessageStatus) -> String {
-        val semanticPath = path.filterNot {
-            it.isContextCompact() && !it.isSuccessfulContextCompact()
-        }
-        val nearestCompact = semanticPath.indexOfLast(ChatMessage::isSuccessfulContextCompact)
-        val activePath = semanticPath.drop(nearestCompact.coerceAtLeast(-1) + 1)
-        val retained = splitContextForCompactRetention(
-            compactSplitMessages(activePath),
-            retainLogicalMessages,
-        ).retained
-        return { generatedText, status ->
-            if (status == MessageStatus.SUCCESS && generatedText.isNotBlank()) {
-                buildPersistedCompactText(generatedText, retained)
-            } else {
-                generatedText
+        state: ConversationGenerationState,
+    ) {
+        if (!config.enabled) return
+        val job = state.scope.launch {
+            runCatching {
+                batchEngine.precompressFullBatches(conversationId, config)
             }
         }
+        batchEngine.trackPrecompress(conversationId, job)
+    }
+
+    private fun CompactResult.alsoReportIntegrity(conversationId: String): CompactResult {
+        val issues = (this as? CompactResult.Created)?.integrityIssues.orEmpty()
+        if (issues.isNotEmpty()) onDigestIntegrity(conversationId, issues)
+        return this
     }
 }

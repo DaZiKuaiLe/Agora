@@ -17,6 +17,7 @@ internal fun CompactFailureReason.stringResourceId(): Int = when (this) {
     CompactFailureReason.GENERATION_NOT_STARTED -> R.string.context_compact_generation_not_started
     CompactFailureReason.MESSAGE_DISAPPEARED -> R.string.context_compact_message_disappeared
     CompactFailureReason.OPEN_CONVERSATION -> R.string.context_compact_open_conversation
+    CompactFailureReason.TURN_TOO_LARGE -> R.string.context_compact_turn_too_large
     CompactFailureReason.GENERIC -> R.string.context_compact_failed
 }
 
@@ -25,3 +26,6 @@ internal fun compactFailureMessage(
     failed: CompactResult.Failed,
 ): String = failed.externalDetail?.takeIf(String::isNotBlank)
     ?: context.getString(failed.reason.stringResourceId())
+
+internal fun CompactResult.Failed.shouldPresentAsDialog(): Boolean =
+    reason == CompactFailureReason.TURN_TOO_LARGE

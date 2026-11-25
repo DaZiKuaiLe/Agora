@@ -41,13 +41,19 @@ internal object StreamingToolArgumentHintResolver {
             ToolKind.WEB_FETCH -> root.scalar("url")
             ToolKind.CONVERSATION_READ -> root.scalar("conversation_id")
             ToolKind.SHELL_EXECUTE -> root.scalar("command")
+                ?: root.scalar("script")
             ToolKind.SHELL_JOB_GET,
             ToolKind.SHELL_JOB_WAIT,
-            ToolKind.SHELL_JOB_STOP -> root.scalar("job_id")
+            ToolKind.SHELL_JOB_STOP -> root.scalar("process_id")
+                ?: root.scalar("async_command_id")
+                ?: root.scalar("job_id")
             ToolKind.FILE_READ,
             ToolKind.FILE_WRITE,
             ToolKind.FILE_EDIT,
+            ToolKind.FILE_OPEN,
             ToolKind.IMAGE_VIEW -> root.scalar("path")
+                ?: root.scalar("local_path")
+                ?: root.scalar("remote_path")
             ToolKind.FILE_GLOB,
             ToolKind.FILE_GREP -> root.scalar("pattern")
             ToolKind.IMAGE_GENERATE -> root.scalar("prompt")
@@ -87,9 +93,25 @@ internal fun normalizeToolSummarySubject(
     maxCharacters: Int = MAX_TOOL_SUMMARY_SUBJECT_CHARS,
 ): String? {
     require(maxCharacters > 0)
-    return value
-        ?.replace(Regex("\\s+"), " ")
-        ?.trim()
-        ?.takeIf { it.isNotEmpty() }
-        ?.take(maxCharacters)
+    if (value.isNullOrEmpty()) return null
+    // Collapse whitespace on a bounded prefix only. Matcher.replaceAll on a multi-MB tool
+    // payload would allocate another copy of the entire string and can OOM the 256MB heap.
+    val limit = maxCharacters
+    val scan = minOf(value.length, limit + 32)
+    val collapsed = buildString(limit) {
+        var prevSpace = false
+        var index = 0
+        while (index < scan && length < limit) {
+            val ch = value[index]
+            if (ch.isWhitespace()) {
+                if (!prevSpace && isNotEmpty()) append(' ')
+                prevSpace = true
+            } else {
+                append(ch)
+                prevSpace = false
+            }
+            index++
+        }
+    }.trim()
+    return collapsed.takeIf { it.isNotEmpty() }?.take(limit)
 }

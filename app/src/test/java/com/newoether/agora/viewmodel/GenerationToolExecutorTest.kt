@@ -1,6 +1,8 @@
 package com.newoether.agora.viewmodel
 
 import com.newoether.agora.api.ToolDefinition
+import com.newoether.agora.api.ToolFunction
+import com.newoether.agora.api.ToolParameters
 import com.newoether.agora.model.RunEffectIdentity
 import com.newoether.agora.tool.ToolExecutionEvent
 import com.newoether.agora.tool.ToolProvider
@@ -83,6 +85,34 @@ class GenerationToolExecutorTest {
     }
 
     @Test
+    fun unauthorizedToolErrorNamesAskModeOnlyWhenActive() = runTest {
+        val provider = FakeToolProvider()
+        val executor = GenerationToolExecutor.forTest(listOf(provider))
+        data class Case(val name: String, val askMode: Boolean, val contains: String, val absent: String)
+        listOf(
+            Case("off", askMode = false, contains = "not authorized", absent = "Ask mode"),
+            Case("on", askMode = true, contains = "Ask mode", absent = "not authorized"),
+        ).forEach { case ->
+            val executed = executor.execute(
+                call = AuthorizedToolCall(
+                    batchIdentity = BATCH_IDENTITY,
+                    callId = "call-${case.name}",
+                    name = "known_tool",
+                    arguments = "{}",
+                    context = GenerationContext(askMode = case.askMode),
+                    authorizedToolNames = emptySet(),
+                ),
+                onEvent = {},
+            )
+            assertTrue(case.name, executed.result.isError)
+            assertTrue(case.name, case.contains in executed.result.text)
+            assertTrue(case.name, case.absent !in executed.result.text)
+            if (case.askMode) assertTrue(case.name, "Do not retry" in executed.result.text)
+        }
+        assertEquals(0, provider.executionCount)
+    }
+
+    @Test
     fun `tool timeout is a recoverable identified result`() = runTest {
         val provider = object : ToolProvider {
             override fun definitions(ctx: GenerationContext): List<ToolDefinition> = emptyList()
@@ -113,6 +143,34 @@ class GenerationToolExecutorTest {
         assertEquals("call-timeout", executed.callId)
         assertTrue(executed.result.isError)
         assertTrue(executed.result.text.contains("timed out after 25ms"))
+    }
+
+    @Test
+    fun askModeOmitsWriteToolsButKeepsCommands() {
+        fun def(name: String) = ToolDefinition(
+            function = ToolFunction(
+                name = name,
+                description = name,
+                parameters = ToolParameters(properties = emptyMap()),
+            ),
+        )
+        val provider = object : ToolProvider {
+            override fun definitions(ctx: GenerationContext): List<ToolDefinition> = listOf(
+                def("read_local_file"),
+                def("write_local_file"),
+                def("execute_local_command"),
+                def("mcp_fs_write_aaaaaa"),
+            )
+            override suspend fun execute(name: String, arguments: String, ctx: GenerationContext) = ""
+            override fun handles(name: String) = true
+        }
+        val executor = GenerationToolExecutor.forTest(listOf(provider))
+        val names = executor.definitions(GenerationContext(askMode = true)).map { it.function.name }
+        assertEquals(listOf("read_local_file", "execute_local_command"), names)
+        assertEquals(
+            4,
+            executor.definitions(GenerationContext(askMode = false)).size,
+        )
     }
 
     private class FakeToolProvider : ToolProvider {

@@ -70,8 +70,7 @@ class DataControlController internal constructor(
     fun refreshCounts() {
         scope.launch(ioDispatcher) {
             _conversationCount.value = conversations.getAllConversationsList().size
-            _memoryCount.value = memory.listFiles().size +
-                skills.listFiles().size +
+            _memoryCount.value = skills.listFiles().size +
                 (if (memory.getActiveMemory().isNotEmpty()) 1 else 0)
             _systemPromptCount.value = settings.getSystemPrompts().size
         }

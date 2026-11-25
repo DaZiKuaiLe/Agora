@@ -45,7 +45,7 @@ class ToolCallTextParserTest {
     fun parsesNamespacedAnthropicXmlAndDecodesEntities() {
         val parsed = ToolCallTextParser.parse(
             """
-            <antml:invoke name='execute_shell_command'>
+            <antml:invoke name='execute_remote_command'>
               <antml:parameter name='command'>echo &quot;a&amp;b&quot;</antml:parameter>
               <antml:parameter name='timeout_ms'>60000</antml:parameter>
             </antml:invoke>
@@ -53,7 +53,7 @@ class ToolCallTextParserTest {
         )
 
         assertEquals(1, parsed.size)
-        assertEquals("execute_shell_command", parsed.single().name)
+        assertEquals("execute_remote_command", parsed.single().name)
         assertTrue(parsed.single().arguments.contains("echo \\\"a&b\\\""))
         assertTrue(parsed.single().arguments.contains("60000"))
     }

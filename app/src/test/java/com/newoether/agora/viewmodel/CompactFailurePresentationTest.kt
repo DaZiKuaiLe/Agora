@@ -19,12 +19,19 @@ class CompactFailurePresentationTest {
             CompactFailureReason.GENERATION_NOT_STARTED to R.string.context_compact_generation_not_started,
             CompactFailureReason.MESSAGE_DISAPPEARED to R.string.context_compact_message_disappeared,
             CompactFailureReason.OPEN_CONVERSATION to R.string.context_compact_open_conversation,
+            CompactFailureReason.TURN_TOO_LARGE to R.string.context_compact_turn_too_large,
             CompactFailureReason.GENERIC to R.string.context_compact_failed,
         )
 
         assertEquals(CompactFailureReason.entries.toSet(), expected.keys)
         expected.forEach { (reason, resourceId) ->
             assertEquals(resourceId, reason.stringResourceId())
+        }
+        CompactFailureReason.entries.forEach { reason ->
+            assertEquals(
+                reason == CompactFailureReason.TURN_TOO_LARGE,
+                CompactResult.Failed(reason).shouldPresentAsDialog(),
+            )
         }
     }
 }

@@ -25,9 +25,13 @@ import com.newoether.agora.sandbox.SandboxManagerFactory
 import com.newoether.agora.service.TaskWorker
 import com.newoether.agora.viewmodel.ChatViewModel
 import com.newoether.agora.viewmodel.ChatViewModelFactory
+import com.newoether.agora.viewmodel.BackgroundProcessCoordinator
 import com.newoether.agora.viewmodel.ConversationStateRegistry
 import com.newoether.agora.viewmodel.ProviderRegistry
+import com.newoether.agora.viewmodel.AllFilesAccessController
 import com.newoether.agora.viewmodel.ShellConfirmationController
+import com.newoether.agora.util.SshSessionPool
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -65,11 +69,12 @@ class AppContainer(
     val memoryManager: MemoryManager by lazy { MemoryManager(appContext) }
     val skillManager: SkillManager by lazy { SkillManager(appContext) }
     val chatDao: ChatDao by lazy { database.chatDao() }
+    private val chatUiMessageDao by lazy { database.chatUiMessageDao() }
 
     // ── Repositories ──────────────────────────────────────────
 
     val conversationRepository: ConversationRepository by lazy {
-        ConversationRepository(chatDao)
+        ConversationRepository(chatDao, chatUiMessageDao)
     }
 
     /**
@@ -77,9 +82,16 @@ class AppContainer(
      * lets an overdue Worker race the orphan cleanup and inspect an impossible half-live graph.
      */
     fun startProcessServices() {
+        backgroundProcessCoordinator.start()
         appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             conversationRepository.ensureRunRecovery()
             automationScheduler.start()
+        }
+        appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            while (true) {
+                delay(SshSessionPool.SWEEP_INTERVAL_MS)
+                SshSessionPool.shared.evictExpired()
+            }
         }
     }
     val taskRepository: TaskRepository by lazy {
@@ -92,6 +104,11 @@ class AppContainer(
     /** One process-wide confirmation queue shared by Chat, Task, and Loop generation. */
     val shellConfirmationController: ShellConfirmationController by lazy {
         ShellConfirmationController(settingsRepository)
+    }
+
+    /** Process-wide all-files access prompt handshake for local storage tools. */
+    val allFilesAccessController: AllFilesAccessController by lazy {
+        AllFilesAccessController(appContext)
     }
 
     // ── Generation singletons (process-scoped) ────────────────
@@ -114,6 +131,14 @@ class AppContainer(
     /** Foreground generation slots survive Activity/ViewModel recreation within this process. */
     val conversationStateRegistry: ConversationStateRegistry by lazy {
         ConversationStateRegistry()
+    }
+
+    private val backgroundProcessCoordinator: BackgroundProcessCoordinator by lazy {
+        BackgroundProcessCoordinator(
+            conversations = conversationRepository,
+            generationRegistry = conversationStateRegistry,
+            scope = appScope,
+        )
     }
 
     val mcpRegistry: McpRegistry by lazy {
@@ -176,6 +201,7 @@ class AppContainer(
             appScope = appScope,
             executionCoordinator = conversationExecutionCoordinator,
             shellConfirmation = shellConfirmationController,
+            allFilesAccess = allFilesAccessController,
             automationExecutionGate = automationExecutionGate,
             mcpToolProvider = mcpToolProvider,
             generationRegistry = conversationStateRegistry,
@@ -241,6 +267,6 @@ class AppContainer(
             autoBackupManager, conversationRepository, settingsRepository, localProvider, providerRegistry,
             taskManager, loopManager, automationToolProvider, conversationExecutionCoordinator,
             automationExecutionGate, conversationStateRegistry, shellConfirmationController,
-            mcpRegistry, mcpToolProvider, taskExecutionEngine,
+            allFilesAccessController, mcpRegistry, mcpToolProvider, taskExecutionEngine,
         )
 }

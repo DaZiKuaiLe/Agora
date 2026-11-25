@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="tool_view_image">View Image</string>
-    <string name="tool_viewing_image">Viewing image %1$s…</string>
-    <string name="tool_progress_viewing">Viewing…</string>
-    <string name="tool_viewed_image">Viewed image %1$s</string>
-    <string name="tool_viewed_image_default">Viewed image</string>
+    <string name="tool_view_image">Read Image</string>
+    <string name="tool_viewing_image">Reading image %1$s…</string>
+    <string name="tool_progress_viewing">Reading…</string>
+    <string name="tool_viewed_image">Read image %1$s</string>
+    <string name="tool_viewed_image_default">Read image</string>
+    <string name="tool_upload_file">Upload File</string>
+    <string name="tool_download_file">Download File</string>
+    <string name="tool_open_file">Open File</string>
+    <string name="tool_opening_file">Opening %1$s…</string>
+    <string name="tool_progress_opening">Opening…</string>
+    <string name="tool_opened_file">Opened %1$s</string>
+    <string name="tool_opened_file_default">Opened file</string>
 </resources>

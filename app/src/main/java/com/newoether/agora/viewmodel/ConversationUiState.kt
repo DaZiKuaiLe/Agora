@@ -89,6 +89,14 @@ data class ConversationUiState(
             val messagesByParent = messagesForPath.groupBy { it.parentId }
                 .mapValues { (_, list) -> list.sortedBy { it.timestamp } }
             var cursor: String? = null
+            // A loaded page does not include the conversation root. Start at the off-page parent
+            // so this page's first row is still a child the walk can select.
+            if (messagesByParent[null].isNullOrEmpty()) {
+                val loadedIds = HashSet<String>(messagesForPath.size)
+                messagesForPath.forEach { loadedIds.add(it.id) }
+                val head = messagesForPath.firstOrNull { it.parentId !in loadedIds }
+                if (head != null) cursor = head.parentId
+            }
 
             while (true) {
                 val siblings = messagesByParent[cursor] ?: break

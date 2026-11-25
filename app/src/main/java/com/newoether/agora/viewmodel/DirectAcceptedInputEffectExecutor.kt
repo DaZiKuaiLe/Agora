@@ -8,6 +8,7 @@ import com.newoether.agora.data.repository.SettingsRepository
 import com.newoether.agora.model.ChatMessage
 import com.newoether.agora.model.MessageStatus
 import com.newoether.agora.model.RunEffect
+import com.newoether.agora.model.isProcessCompletionNoticeId
 import com.newoether.agora.util.DebugLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -61,6 +62,7 @@ internal data class DirectAcceptedInputRequest(
     val requestScroll: (conversationId: String, messageId: String) -> Unit,
     val onAccepted: suspend (SendAcceptance) -> Unit,
     val onModelMessageCreated: ((String) -> Unit)?,
+    val userMessageIdPrefix: String? = null,
 ) {
     val conversationId: String get() = inputEffect.identity.conversationId
     val runId: String get() = inputEffect.identity.runId
@@ -144,7 +146,7 @@ internal class DirectAcceptedInputEffectExecutor(
         var bindingOutcome: ConversationGenerationState.RunBindingOutcome =
             ConversationGenerationState.RunBindingOutcome.Rejected
         var inputGraphCommitted = false
-        val userMessageId = idFactory()
+        val userMessageId = (request.userMessageIdPrefix ?: "") + idFactory()
         val modelMessageId = idFactory()
         var roomProjectionFence: RoomMessageProjectionFence? = null
 
@@ -274,9 +276,7 @@ internal class DirectAcceptedInputEffectExecutor(
                     ),
                     state,
                 )
-                val lastMessage = conversations
-                    .getMessagesForConversationSnapshot(request.conversationId)
-                    .find { it.id == modelMessageId }
+                val lastMessage = conversations.getMessage(modelMessageId)
                 if (
                     request.wasNewChat &&
                     generationSnapshot.titleGenerationEnabled &&
@@ -342,7 +342,7 @@ internal class DirectAcceptedInputEffectExecutor(
     else executionCoordinator.withConversationLock(conversationId, block)
 
     private suspend fun notifyPersistedUser(messageId: String, text: String) {
-        if (text.isNotBlank()) {
+        if (text.isNotBlank() && !messageId.isProcessCompletionNoticeId()) {
             runCatching { onUserMessagePersisted(messageId, text) }
                 .onFailure { error ->
                     DebugLog.w(

@@ -66,7 +66,7 @@ fun AdvancedSettingsDialog(
                     label = stringResource(R.string.context_limit),
                     value = contextLimit,
                     presets = ContextBudget.PRESETS,
-                    format = ContextBudget::compactLabel,
+                    format = ContextBudget::groupedLabel,
                     onChange = { contextLimit = it },
                     onReset = { contextLimit = null },
                     defaultValue = ContextBudget.DEFAULT_CONTEXT_LIMIT
@@ -76,7 +76,7 @@ fun AdvancedSettingsDialog(
                     label = stringResource(R.string.compact_threshold),
                     value = compactThreshold,
                     presets = ContextBudget.PRESETS,
-                    format = ContextBudget::compactLabel,
+                    format = ContextBudget::groupedLabel,
                     onChange = { compactThreshold = it },
                     onReset = { compactThreshold = null },
                     defaultValue = ContextBudget.DEFAULT_COMPACT_THRESHOLD
@@ -96,7 +96,7 @@ fun AdvancedSettingsDialog(
                     label = stringResource(R.string.gen_max_tokens),
                     value = maxTokens,
                     presets = maxTokensPresets,
-                    format = { it.toString() },
+                    format = ContextBudget::groupedLabel,
                     onChange = { maxTokens = it },
                     onReset = { maxTokens = null }
                 )

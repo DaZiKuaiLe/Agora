@@ -33,6 +33,57 @@ interface ChatContextCompactDao {
     @Query("SELECT * FROM conversations WHERE id = :conversationId")
     suspend fun getConversation(conversationId: String): ChatEntity?
 
+    @Query(
+        """
+        UPDATE conversations
+        SET cachedSendTokens = :tokens,
+            sendTokenCountedTurnId = :countedTurnId,
+            sendTokenBudget = :budget,
+            sendTokenRetainTurns = :retainTurns,
+            sendTokenFixedCost = :fixedCost,
+            sendTokenConfigKey = :configKey,
+            sendTokenPrefixTokens = :prefixTokens
+        WHERE id = :conversationId
+        """
+    )
+    suspend fun setSendTokenCache(
+        conversationId: String,
+        tokens: Int,
+        countedTurnId: String?,
+        budget: Int,
+        retainTurns: Int,
+        fixedCost: Int,
+        configKey: String?,
+        prefixTokens: Int,
+    ): Int
+
+    @Query(
+        """
+        UPDATE conversations
+        SET transcriptTokenTotal = :total
+        WHERE id = :conversationId
+        """
+    )
+    suspend fun setTranscriptTokenTotal(conversationId: String, total: Int): Int
+
+    @Query(
+        """
+        SELECT EXISTS(
+            SELECT 1 FROM messages
+            WHERE conversationId = :conversationId
+              AND (
+                (compactBatchId IS NOT NULL AND compactBatchId != '')
+                OR (compactDigest IS NOT NULL AND compactDigest != '')
+                OR (id LIKE 'compact_%' AND status = 'SUCCESS')
+              )
+        )
+        """,
+    )
+    suspend fun conversationHasCompactArtifacts(conversationId: String): Boolean
+
+    @Query("SELECT thoughts FROM messages WHERE id = :messageId")
+    suspend fun getMessageThoughts(messageId: String): String?
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertMessage(message: MessageEntity)
 
@@ -47,6 +98,16 @@ interface ChatContextCompactDao {
 
     @Query("SELECT * FROM messages WHERE runId IN (:runIds) ORDER BY runSequence, timestamp, id")
     suspend fun getMessagesForRuns(runIds: List<String>): List<MessageEntity>
+
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE runId IN (:runIds)
+          AND status IN ('SENDING', 'THINKING', 'TOOL_CALLING', 'TRANSCRIBING')
+        ORDER BY runSequence, timestamp, id
+        """,
+    )
+    suspend fun getInFlightMessagesForRuns(runIds: List<String>): List<MessageEntity>
 
     @Query("DELETE FROM runs WHERE id = :runId")
     suspend fun deleteRun(runId: String): Int
@@ -103,6 +164,15 @@ interface ChatContextCompactDao {
         newRunId: String,
         modelName: String,
     ): Int
+
+    @Query(
+        """
+        UPDATE messages
+        SET integrateText = :text
+        WHERE turnId = :turnId
+        """,
+    )
+    suspend fun setIntegrateText(turnId: String, text: String): Int
 
     /**
      * Substitutes one terminal Compact's dedicated Run with a fresh active Run while retaining the

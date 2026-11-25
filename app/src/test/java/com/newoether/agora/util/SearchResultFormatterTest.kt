@@ -46,28 +46,21 @@ class SearchResultFormatterTest {
     }
 
     @Test
-    fun isRawSearchResult_webSearch() {
-        assertTrue(SearchResultFormatter.isRawSearchResult("""{"type":"web_search"}"""))
-    }
-
-    @Test
-    fun isRawSearchResult_searchConversations() {
-        assertTrue(SearchResultFormatter.isRawSearchResult("""{"type":"search_conversations"}"""))
-    }
-
-    @Test
-    fun isRawSearchResult_conversationList() {
-        assertTrue(SearchResultFormatter.isRawSearchResult("""{"type":"list_conversations"}"""))
-    }
-
-    @Test
-    fun isRawSearchResult_plainText() {
-        assertFalse(SearchResultFormatter.isRawSearchResult("Hello, world!"))
-    }
-
-    @Test
-    fun isRawSearchResult_invalidJson() {
-        assertFalse(SearchResultFormatter.isRawSearchResult("{invalid"))
+    fun isRawSearchResult_matchesKnownTypesWithoutParsingTheWholeBody() {
+        data class Case(val name: String, val text: String, val raw: Boolean)
+        val hugeUnknown = "{" + "\"payload\":\"" + "x".repeat(20_000) + "\"}"
+        val cases = listOf(
+            Case("web_search", """{"type":"web_search"}""", raw = true),
+            Case("search_conversations", """{"type":"search_conversations"}""", raw = true),
+            Case("search_current_conversation", """{"type":"search_current_conversation"}""", raw = true),
+            Case("list_conversations", """{"type":"list_conversations"}""", raw = true),
+            Case("plain text", "Hello, world!", raw = false),
+            Case("invalid object prefix", "{invalid", raw = false),
+            Case("huge unknown json", hugeUnknown, raw = false),
+        )
+        for (case in cases) {
+            assertEquals(case.name, case.raw, SearchResultFormatter.isRawSearchResult(case.text))
+        }
     }
 
     @Test
@@ -109,7 +102,7 @@ class SearchResultFormatterTest {
 
     @Test
     fun format_listShells_valid() {
-        val json = """{"type":"list_shells","devices":[{"name":"dev1","description":"Test server"}]}"""
+        val json = """{"type":"list_remote_shells","devices":[{"name":"dev1","description":"Test server"}]}"""
         val result = SearchResultFormatter.format(json, context)
         assertTrue(result.contains("dev1"))
         assertTrue(result.contains("Test server"))

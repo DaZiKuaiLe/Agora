@@ -12,15 +12,9 @@ class SettingsContractsTest {
     }
 
     @Test
-    fun contextCompactRetainsFiveRecentMessagesByDefault() {
-        assertEquals(5, DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT)
-    }
-
-    @Test
-    fun defaultContextCompactPromptPreservesConversationLanguages() {
-        val prompt = BuiltInPrompts.CONTEXT_COMPACT_SYSTEM.lowercase()
-        assertTrue(prompt.contains("same language"))
-        assertTrue(prompt.contains("do not translate"))
+    fun contextCompactBatchSizeDefaultsToEight() {
+        assertEquals(8, DEFAULT_CONTEXT_COMPACT_BATCH_SIZE)
+        assertEquals(DEFAULT_CONTEXT_COMPACT_BATCH_SIZE, DEFAULT_CONTEXT_COMPACT_RETAIN_COUNT)
     }
 
     @Test
@@ -56,6 +50,7 @@ class SettingsContractsTest {
         assertTrue(ConversationToolState().isAllNull())
         assertFalse(ConversationToolState(openAiWebSearchEnabled = false).isAllNull())
         assertFalse(ConversationToolState(shellEnabled = false).isAllNull())
+        assertFalse(ConversationToolState(askModeEnabled = false).isAllNull())
     }
     @Test
     fun unknownOrRemovedSearchProviderFallsBackToZhipu() {
@@ -63,5 +58,16 @@ class SettingsContractsTest {
         assertEquals("zhipu", normalizeWebSearchProvider(" unknown "))
         assertEquals("zhipu", normalizeWebSearchProvider(null))
         assertEquals("kagi", normalizeWebSearchProvider(" KAGI "))
+    }
+
+    @Test
+    fun retiredAppLanguagesCollapseToSupportedCodes() {
+        assertEquals("en", normalizeAppLanguage("en"))
+        assertEquals("zh", normalizeAppLanguage("zh"))
+        assertEquals("zh", normalizeAppLanguage("zh-Hant"))
+        assertEquals("system", normalizeAppLanguage("ja"))
+        assertEquals("system", normalizeAppLanguage("pt-BR"))
+        assertEquals("system", normalizeAppLanguage(null))
+        assertEquals("system", normalizeAppLanguage(" system "))
     }
 }

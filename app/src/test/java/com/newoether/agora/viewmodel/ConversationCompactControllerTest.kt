@@ -1,20 +1,11 @@
 package com.newoether.agora.viewmodel
 
-import com.newoether.agora.api.ProviderConfig
-import com.newoether.agora.data.local.MessageEntity
+import com.newoether.agora.data.BuiltInPrompts
 import com.newoether.agora.data.repository.ConversationRepository
-import com.newoether.agora.data.repository.SettingsRepository
-import com.newoether.agora.model.ChatMessage
-import com.newoether.agora.model.MessageStatus
-import com.newoether.agora.model.Participant
-import com.newoether.agora.model.RunEffectIdentity
 import io.mockk.coEvery
 import io.mockk.coVerify
-import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -24,443 +15,279 @@ import org.junit.Test
 
 class ConversationCompactControllerTest {
     @Test
-    fun disabledSettingShortCircuitsBeforeReadingDurableGraph() = runBlocking {
-        val conversations = mockk<ConversationRepository>()
-        val compactor = ContextCompactor(conversations = conversations)
-
-        assertFalse(
-            compactor.automaticNeeded(
-                "conversation",
-                automaticConfig().copy(enabled = false),
-            ),
-        )
-        coVerify(exactly = 0) {
-            conversations.getMessagesForConversationSnapshot(any())
-            conversations.restoreBranchSelections(any())
-        }
-    }
-
-    @Test
-    fun automaticCompactUsesOrdinaryPathAndOnlySpecializesGenerationParameters() = runBlocking {
-        val conversations = mockk<ConversationRepository>()
-        val operation = FakeCompactOperation(automaticNeeded = true)
-        val manager = mockk<GenerationManager>()
-        val launcher = mockk<StandardGenerationContinuationLauncher>()
-        val requestBuilder = mockk<GenerationRequestBuilder>()
-        val state = ConversationGenerationState("conversation")
-        val source = sourceEntity()
-        val pathRequest = slot<GenerationApiPathRequest>()
-        val launchRequest = slot<StandardGenerationContinuationRequest>()
-        val completedJob = Job().apply { complete() }
-
-        coEvery { conversations.getMessagesForConversationSnapshot("conversation") } returns
-            listOf(source)
-        coEvery { conversations.restoreBranchSelections("conversation") } returns
-            mapOf(null to source.id)
-        coEvery { manager.buildApiPath(capture(pathRequest)) } returns GenerationApiPath(
-            messages = listOf(source.toUi()),
-            providerConfig = mockk<ProviderConfig>(),
-        )
-        every { launcher.launch(capture(launchRequest), state) } returns
-            StandardGenerationContinuationLaunch(
-                job = completedJob,
-                modelMessageId = "compact_message",
-                started = CompletableDeferred(true),
+    fun disabledSettingShortCircuitsBeforeReadingDurableGraph() {
+        runBlocking {
+            val conversations = mockk<ConversationRepository>()
+            val batchEngine = BatchCompactEngine(
+                conversations = conversations,
+                detailStore = mockk(relaxed = true),
+                providers = mockk(relaxed = true),
             )
+            val compactor = ContextCompactor(batchEngine = batchEngine)
 
-        val started = controller(
-            conversations,
-            operation,
-            requestBuilder,
-            manager,
-            launcher,
-        ).startAutomaticStandard(
-            conversationId = "conversation",
-            config = automaticConfig(),
-            state = state,
-        )
-
-        assertNotNull(started)
-        assertEquals(source.id, pathRequest.captured.parentId)
-        assertEquals(listOf(source), pathRequest.captured.loadedMessages)
-        assertEquals(source.id, launchRequest.captured.parentMessageId)
-        assertTrue(launchRequest.captured.modelMessageId!!.startsWith("compact_"))
-        assertEquals(null, launchRequest.captured.replacementMessageId)
-        assertEquals("compact", launchRequest.captured.callerTag)
-        assertEquals("compact prompt", launchRequest.captured.snapshot.config.effectiveSystemPrompt)
-        assertEquals(
-            "Create the compact context summary now.",
-            launchRequest.captured.snapshot.config.initialUserPrompt,
-        )
-        assertTrue(launchRequest.captured.queueDrainRequiresSuccess)
-        assertFalse(launchRequest.captured.snapshot.config.thinkingEnabled)
-        assertFalse(launchRequest.captured.snapshot.context.webSearchEnabled)
-        assertFalse(launchRequest.captured.snapshot.context.shellEnabled)
-        val finalText = launchRequest.captured.transformFinalText(
-            "summary",
-            MessageStatus.SUCCESS,
-        )
-        assertTrue(finalText.contains("summary"))
-        assertTrue(finalText.contains("[User]"))
-        state.dispose()
-        Unit
-    }
-
-    @Test
-    fun recompactLaunchesTheSameRowAtTheSameParentWithoutTouchingSuffix() = runBlocking {
-        val conversations = mockk<ConversationRepository>()
-        val operation = FakeCompactOperation()
-        val manager = mockk<GenerationManager>()
-        val launcher = mockk<StandardGenerationContinuationLauncher>()
-        val requestBuilder = mockk<GenerationRequestBuilder>()
-        val state = ConversationGenerationState("conversation")
-        val source = sourceEntity()
-        val target = compactEntity(parentId = source.id)
-        val suffix = sourceEntity(
-            id = "suffix",
-            parentId = target.id,
-            runId = "suffix-run",
-            participant = Participant.MODEL,
-        )
-        val selected = mapOf<String?, String>(
-            null to source.id,
-            source.id to target.id,
-            target.id to suffix.id,
-        )
-        val before = listOf(source, target, suffix)
-        val settled = before.map {
-            if (it.id == target.id) it.copy(text = "new summary", status = MessageStatus.SUCCESS)
-            else it
-        }
-        coEvery { conversations.getMessagesForConversationSnapshot("conversation") } returnsMany
-            listOf(before, before, settled)
-        coEvery { conversations.restoreBranchSelections("conversation") } returns selected
-        coEvery {
-            requestBuilder.captureAdmissionSnapshot(
-                conversationId = "conversation",
-                runId = any(),
-                modelId = "provider:model",
+            assertFalse(
+                compactor.automaticNeeded(
+                    "conversation",
+                    automaticConfig().copy(enabled = false),
+                ),
             )
-        } returns testGenerationAdmissionSnapshot(
-            conversationId = "conversation",
-            runId = "compact-preflight-run",
-        )
-        coEvery { manager.buildApiPath(any()) } returns GenerationApiPath(
-            messages = listOf(source.toUi()),
-            providerConfig = mockk<ProviderConfig>(),
-        )
-        val launchRequest = slot<StandardGenerationContinuationRequest>()
-        every { launcher.launch(capture(launchRequest), state) } returns
-            StandardGenerationContinuationLaunch(
-                job = Job().apply { complete() },
-                modelMessageId = target.id,
-                started = CompletableDeferred(true),
-            )
-
-        val result = controller(
-            conversations,
-            operation,
-            requestBuilder,
-            manager,
-            launcher,
-        ).manual(
-            conversationId = "conversation",
-            request = CompactRequest(
-                model = "provider:model",
-                prompt = "new prompt",
-                retainLogicalMessages = 2,
-                replaceMessageId = target.id,
-            ),
-            state = state,
-        )
-
-        assertEquals(CompactResult.Created(target.id), result)
-        assertEquals(target.id, launchRequest.captured.modelMessageId)
-        assertEquals(target.id, launchRequest.captured.replacementMessageId)
-        assertEquals(source.id, launchRequest.captured.parentMessageId)
-        assertEquals("compact-preflight-run", launchRequest.captured.snapshot.runId)
-        assertEquals("recompact", launchRequest.captured.callerTag)
-        assertEquals(suffix, before.single { it.id == suffix.id })
-        coVerify(exactly = 0) {
-            conversations.createRunWithMessages(any(), any(), any(), any(), any())
-        }
-        state.dispose()
-        Unit
-    }
-
-    @Test
-    fun emptyPreflightProjectionCannotReplaceOrBlockTheOrdinaryGenerationPath() = runBlocking {
-        val conversations = mockk<ConversationRepository>()
-        val operation = FakeCompactOperation(automaticNeeded = true)
-        val manager = mockk<GenerationManager>()
-        val launcher = mockk<StandardGenerationContinuationLauncher>()
-        val state = ConversationGenerationState("conversation")
-        val source = sourceEntity()
-        coEvery { conversations.getMessagesForConversationSnapshot("conversation") } returns
-            listOf(source)
-        coEvery { conversations.restoreBranchSelections("conversation") } returns
-            mapOf(null to source.id)
-        coEvery { manager.buildApiPath(any()) } returns GenerationApiPath(
-            messages = emptyList(),
-            providerConfig = mockk<ProviderConfig>(),
-        )
-        every { launcher.launch(any(), state) } returns StandardGenerationContinuationLaunch(
-            job = Job().apply { complete() },
-            modelMessageId = "compact_message",
-            started = CompletableDeferred(true),
-        )
-
-        val started = controller(
-            conversations,
-            operation,
-            mockk(),
-            manager,
-            launcher,
-        ).startAutomaticStandard(
-            conversationId = "conversation",
-            config = automaticConfig(),
-            state = state,
-        )
-
-        assertNotNull(started)
-        io.mockk.verify(exactly = 1) { launcher.launch(any(), state) }
-        state.dispose()
-        Unit
-    }
-
-    @Test
-    fun requiredAutomaticCompactLaunchFailureStopsInsteadOfReportingNotNeeded() = runBlocking {
-        val conversations = mockk<ConversationRepository>()
-        val operation = FakeCompactOperation(automaticNeeded = true)
-        val manager = mockk<GenerationManager>()
-        val launcher = mockk<StandardGenerationContinuationLauncher>()
-        val state = ConversationGenerationState("conversation")
-        val source = sourceEntity()
-        coEvery { conversations.getMessagesForConversationSnapshot("conversation") } returns
-            listOf(source)
-        coEvery { conversations.restoreBranchSelections("conversation") } returns
-            mapOf(null to source.id)
-        coEvery { manager.buildApiPath(any()) } returns GenerationApiPath(
-            messages = listOf(source.toUi()),
-            providerConfig = mockk<ProviderConfig>(),
-        )
-        every { launcher.launch(any(), state) } returns null
-
-        val result = controller(
-            conversations,
-            operation,
-            mockk(),
-            manager,
-            launcher,
-        ).startAutomaticBeforeSend(
-            "conversation",
-            automaticConfig(),
-            state,
-        )
-
-        assertTrue(result is CompactResult.Failed)
-        state.dispose()
-        Unit
-    }
-
-    @Test
-    fun automaticNotNeededNeverClaimsOrLaunchesGeneration() = runBlocking {
-        val conversations = mockk<ConversationRepository>()
-        val operation = FakeCompactOperation(automaticNeeded = false)
-        val launcher = mockk<StandardGenerationContinuationLauncher>()
-        val state = ConversationGenerationState("conversation")
-
-        val started = controller(
-            conversations,
-            operation,
-            mockk(),
-            mockk(),
-            launcher,
-        ).startAutomaticBeforeSend(
-            "conversation",
-            automaticConfig(),
-            state,
-        )
-
-        assertEquals(CompactResult.NotNeeded, started)
-        io.mockk.verify(exactly = 0) { launcher.launch(any(), any()) }
-        state.dispose()
-        Unit
-    }
-
-    @Test
-    fun stoppedManualCompactReturnsStoppedWithoutExposingGeneratedBody() = runBlocking {
-        val result = manualCompactResult(MessageStatus.STOPPED)
-
-        assertTrue(result is CompactResult.Stopped)
-        assertTrue((result as CompactResult.Stopped).messageId.startsWith("compact_"))
-    }
-
-    @Test
-    fun failedManualCompactReturnsOnlyPersistedErrorSegment() = runBlocking {
-        val result = manualCompactResult(
-            status = MessageStatus.ERROR,
-            errorSegment = "provider failed",
-        )
-
-        assertTrue(result is CompactResult.Failed)
-        assertEquals("provider failed", (result as CompactResult.Failed).externalDetail)
-        assertEquals(CompactFailureReason.GENERIC, result.reason)
-        assertFalse(result.externalDetail.orEmpty().contains("full generated compact body"))
-    }
-
-    private suspend fun manualCompactResult(
-        status: MessageStatus,
-        errorSegment: String? = null,
-    ): CompactResult {
-        val conversations = mockk<ConversationRepository>()
-        val operation = FakeCompactOperation()
-        val manager = mockk<GenerationManager>()
-        val launcher = mockk<StandardGenerationContinuationLauncher>()
-        val requestBuilder = mockk<GenerationRequestBuilder>()
-        val state = ConversationGenerationState("conversation")
-        val source = sourceEntity()
-        var compactMessageId: String? = null
-
-        coEvery {
-            conversations.getMessagesForConversationSnapshot("conversation")
-        } answers {
-            val settledId = compactMessageId
-            if (settledId == null) {
-                listOf(source)
-            } else {
-                listOf(
-                    source,
-                    MessageEntity(
-                        id = settledId,
-                        conversationId = "conversation",
-                        parentId = source.id,
-                        text = "full generated compact body",
-                        status = status,
-                        participant = Participant.MODEL,
-                        timestamp = 2L,
-                        modelName = "provider:model",
-                        toolCallJson = errorSegment?.let { error ->
-                            """[{"type":"answer","content":"full generated compact body"},{"type":"error","content":"$error"}]"""
-                        },
-                        runId = "compact-run",
-                        runSequence = 0,
-                    ),
-                )
+            coVerify(exactly = 0) {
+                conversations.getCompactMessageGraph(any())
+                conversations.restoreBranchSelections(any())
+                conversations.getSendTokenCache(any())
             }
         }
-        coEvery { conversations.restoreBranchSelections("conversation") } returns
-            mapOf(null to source.id)
-        coEvery {
-            requestBuilder.captureAdmissionSnapshot(
-                conversationId = "conversation",
-                runId = any(),
-                modelId = "provider:model",
-            )
-        } returns testGenerationAdmissionSnapshot(
-            conversationId = "conversation",
-            runId = "compact-preflight-run",
-        )
-        coEvery { manager.buildApiPath(any()) } returns GenerationApiPath(
-            messages = listOf(source.toUi()),
-            providerConfig = mockk<ProviderConfig>(),
-        )
-        every { launcher.launch(any(), state) } answers {
-            val request = firstArg<StandardGenerationContinuationRequest>()
-            val messageId = requireNotNull(request.modelMessageId)
-            compactMessageId = messageId
-            StandardGenerationContinuationLaunch(
-                job = Job().apply { complete() },
-                modelMessageId = messageId,
-                started = CompletableDeferred(true),
-            )
-        }
-
-        val result = controller(
-            conversations,
-            operation,
-            requestBuilder,
-            manager,
-            launcher,
-        ).manual(
-            conversationId = "conversation",
-            request = CompactRequest(
-                model = "provider:model",
-                prompt = "compact prompt",
-                retainLogicalMessages = 2,
-            ),
-            state = state,
-        )
-        state.dispose()
-        return result
     }
 
-    private fun controller(
-        conversations: ConversationRepository,
-        operation: ContextCompactOperation,
-        requestBuilder: GenerationRequestBuilder,
-        manager: GenerationManager,
-        launcher: StandardGenerationContinuationLauncher,
-    ) = ConversationCompactController(
-        conversations = conversations,
-        operation = operation,
-        requestBuilder = requestBuilder,
-        generationManagerProvider = { manager },
-        continuationLauncher = { launcher },
+    @Test
+    fun automaticStandardUsesContinuationParentWithoutCapsuleLaunch() {
+        runBlocking {
+            val batchEngine = mockk<BatchCompactEngine>()
+            val state = ConversationGenerationState("conversation")
+            coEvery { batchEngine.automaticNeeded("conversation", any()) } returns true
+            coEvery {
+                batchEngine.ensureFormalBatches(
+                    conversationId = "conversation",
+                    config = any(),
+                    fullRecompact = any(),
+                    onProgress = any(),
+                )
+            } returns CompactResult.Created("batch_formal_1")
+
+            val started = ConversationCompactController(
+                batchEngine = batchEngine,
+                requestBuilder = null,
+            ).startAutomaticStandard(
+                conversationId = "conversation",
+                config = automaticConfig(),
+                state = state,
+                continuationParentId = "parent_msg",
+            )
+
+            assertNotNull(started)
+            assertEquals("parent_msg", started!!.messageId)
+            started.job.join()
+            coVerify(exactly = 1) {
+                batchEngine.ensureFormalBatches(
+                    conversationId = "conversation",
+                    config = any(),
+                    fullRecompact = any(),
+                    onProgress = any(),
+                )
+            }
+            state.dispose()
+        }
+    }
+
+    @Test
+    fun automaticNotNeededSkipsLaunch() {
+        runBlocking {
+            val batchEngine = mockk<BatchCompactEngine>()
+            val state = ConversationGenerationState("conversation")
+            coEvery { batchEngine.automaticNeeded("conversation", any()) } returns false
+
+            val started = ConversationCompactController(
+                batchEngine = batchEngine,
+                requestBuilder = null,
+            ).startAutomaticStandard(
+                conversationId = "conversation",
+                config = automaticConfig(),
+                state = state,
+                continuationParentId = "parent_msg",
+            )
+
+            assertEquals(null, started)
+            coVerify(exactly = 0) { batchEngine.ensureFormalBatches(any(), any()) }
+            state.dispose()
+        }
+    }
+
+    @Test
+    fun compactFormatStale_readsConversationRowNotMessageBodies() {
+        runBlocking {
+            data class Case(
+                val name: String,
+                val storedRev: Int,
+                val hasArtifacts: Boolean,
+                val stale: Boolean,
+            )
+            val cases = listOf(
+                Case("behind with artifacts", storedRev = 0, hasArtifacts = true, stale = true),
+                Case("current with artifacts", storedRev = com.newoether.agora.data.CompactFormat.CURRENT_REV, hasArtifacts = true, stale = false),
+                Case("no artifacts", storedRev = 0, hasArtifacts = false, stale = false),
+            )
+            for (case in cases) {
+                val conversations = mockk<ConversationRepository>()
+                coEvery { conversations.getConversation("conversation") } returns
+                    com.newoether.agora.data.local.ChatEntity(
+                        id = "conversation",
+                        title = "t",
+                        compactFormatRev = case.storedRev,
+                    )
+                coEvery { conversations.conversationHasCompactArtifacts("conversation") } returns
+                    case.hasArtifacts
+                val stale = BatchCompactEngine(
+                    conversations = conversations,
+                    detailStore = mockk(relaxed = true),
+                    providers = mockk(relaxed = true),
+                ).compactFormatStale("conversation")
+                assertEquals(case.name, case.stale, stale)
+                coVerify(exactly = 0) {
+                    conversations.getCompactMessageGraph(any())
+                    conversations.restoreBranchSelections(any())
+                }
+            }
+        }
+    }
+
+    @Test
+    fun automaticNeeded_usesSeatedLedgerWithoutReadingGraph() {
+        runBlocking {
+            val conversations = mockk<ConversationRepository>()
+            coEvery { conversations.getSendTokenCache("conversation") } returns SendTokenCache(
+                tokens = 400_000,
+                countedTurnId = "t8|0",
+                budget = 524_288,
+                retainTurns = 8,
+                fixedCost = 40,
+                configKey = "k",
+                prefixTokens = 2_000,
+            )
+            val needed = BatchCompactEngine(
+                conversations = conversations,
+                detailStore = mockk(relaxed = true),
+                providers = mockk(relaxed = true),
+            ).automaticNeeded("conversation", automaticConfig().copy(compactThreshold = 1_000))
+            assertTrue(needed)
+            coVerify(exactly = 0) {
+                conversations.getCompactMessageGraph(any())
+                conversations.restoreBranchSelections(any())
+            }
+        }
+    }
+
+    @Test
+    fun manualCompactIsIncrementalNotFullRecompact() {
+        runBlocking {
+            val batchEngine = mockk<BatchCompactEngine>()
+            val requestBuilder = mockk<GenerationRequestBuilder>()
+            val state = ConversationGenerationState("conversation")
+            val snapshot = testGenerationAdmissionSnapshot(
+                conversationId = "conversation",
+                selectedModelId = "openai:gpt",
+            )
+            coEvery {
+                requestBuilder.captureAdmissionSnapshot("conversation", any(), "openai:gpt")
+            } returns snapshot
+            coEvery {
+                batchEngine.ensureFormalBatches(
+                    conversationId = "conversation",
+                    config = any(),
+                    fullRecompact = false,
+                    onProgress = any(),
+                )
+            } returns CompactResult.Created("batch_formal_2")
+
+            val result = ConversationCompactController(
+                batchEngine = batchEngine,
+                requestBuilder = requestBuilder,
+            ).manual(
+                conversationId = "conversation",
+                request = CompactRequest(
+                    model = "openai:gpt",
+                    prompt = "ignored",
+                    retainLogicalMessages = 8,
+                    fullRecompact = false,
+                ),
+                state = state,
+            )
+
+            assertTrue(result is CompactResult.Created)
+            coVerify {
+                batchEngine.ensureFormalBatches(
+                    conversationId = "conversation",
+                    config = any(),
+                    fullRecompact = false,
+                    onProgress = any(),
+                )
+            }
+            state.dispose()
+        }
+    }
+
+    @Test
+    fun legacyFullRecompactPassesFlag() {
+        runBlocking {
+            val batchEngine = mockk<BatchCompactEngine>()
+            val requestBuilder = mockk<GenerationRequestBuilder>()
+            val state = ConversationGenerationState("conversation")
+            val snapshot = testGenerationAdmissionSnapshot(
+                conversationId = "conversation",
+                selectedModelId = "openai:gpt",
+            )
+            coEvery {
+                requestBuilder.captureAdmissionSnapshot("conversation", any(), "openai:gpt")
+            } returns snapshot
+            coEvery {
+                batchEngine.ensureFormalBatches(
+                    conversationId = "conversation",
+                    config = any(),
+                    fullRecompact = true,
+                    onProgress = any(),
+                )
+            } returns CompactResult.Created("batch_formal_3")
+
+            val result = ConversationCompactController(
+                batchEngine = batchEngine,
+                requestBuilder = requestBuilder,
+            ).manual(
+                conversationId = "conversation",
+                request = CompactRequest(
+                    model = "openai:gpt",
+                    prompt = "ignored",
+                    retainLogicalMessages = 8,
+                    fullRecompact = true,
+                ),
+                state = state,
+            )
+
+            assertTrue(result is CompactResult.Created)
+            coVerify {
+                batchEngine.ensureFormalBatches(
+                    conversationId = "conversation",
+                    config = any(),
+                    fullRecompact = true,
+                    onProgress = any(),
+                )
+            }
+            state.dispose()
+        }
+    }
+
+    private fun automaticConfig() = AutomaticCompactConfig(
+        enabled = true,
+        compactThreshold = 1_000,
+        request = CompactRequest(
+            model = "openai:gpt",
+            prompt = BuiltInPrompts.CONTEXT_COMPACT_SYSTEM,
+            retainLogicalMessages = 8,
+        ),
+        providerName = "openai",
+        apiKey = "key",
+        baseUrl = null,
+        provider = mockk(relaxed = true),
+        configured = true,
+        generationConfig = GenerationConfig(
+            providerName = "openai",
+            modelId = "gpt",
+            apiKey = "key",
+            effectiveSystemPrompt = BuiltInPrompts.CONTEXT_COMPACT_SYSTEM,
+            codeExecutionEnabled = false,
+            googleSearchEnabled = false,
+            thinkingEnabled = false,
+            baseUrl = null,
+        ),
+        providerInstances = emptyMap(),
+        generationContext = GenerationContext(),
     )
-
-    private fun automaticConfig(): AutomaticCompactConfig =
-        testGenerationAdmissionSnapshot().automaticCompact
-
-    private fun sourceEntity(
-        id: String = "source",
-        parentId: String? = null,
-        runId: String = "source-run",
-        participant: Participant = Participant.USER,
-    ) = MessageEntity(
-        id = id,
-        conversationId = "conversation",
-        parentId = parentId,
-        text = id,
-        status = MessageStatus.SUCCESS,
-        participant = participant,
-        timestamp = 1L,
-        modelName = "provider:model",
-        runId = runId,
-        runSequence = 0,
-    )
-
-    private fun compactEntity(parentId: String) = MessageEntity(
-        id = "compact_boundary",
-        conversationId = "conversation",
-        parentId = parentId,
-        text = "old summary",
-        status = MessageStatus.SUCCESS,
-        participant = Participant.MODEL,
-        timestamp = 2L,
-        modelName = "provider:model",
-        runId = "compact-run",
-        runSequence = 0,
-    )
-
-    private fun MessageEntity.toUi() = ChatMessage(
-        id = id,
-        parentId = parentId,
-        text = text,
-        participant = participant,
-        status = status,
-        timestamp = timestamp,
-        modelName = modelName,
-        runId = runId,
-        runSequence = runSequence,
-    )
-}
-
-private class FakeCompactOperation(
-    private val automaticNeeded: Boolean = true,
-) : ContextCompactOperation {
-    override suspend fun automaticNeeded(
-        conversationId: String,
-        config: AutomaticCompactConfig,
-    ): Boolean = automaticNeeded
 }

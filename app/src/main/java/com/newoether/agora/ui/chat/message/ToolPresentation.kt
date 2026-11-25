@@ -2,6 +2,9 @@ package com.newoether.agora.ui.chat.message
 
 import com.newoether.agora.model.MessageSegment
 import com.newoether.agora.model.ToolExecutionStates
+import com.newoether.agora.tool.ProcessCardOverlay
+import com.newoether.agora.tool.ProcessTools
+import com.newoether.agora.util.PathReferenceTokens
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -39,6 +42,7 @@ internal enum class ToolKind {
     FILE_EDIT,
     FILE_GLOB,
     FILE_GREP,
+    FILE_OPEN,
     IMAGE_VIEW,
     IMAGE_GENERATE,
     TASK_CREATE,
@@ -95,35 +99,44 @@ internal object ToolPresentationResolver {
     fun kindForToolName(toolName: String?): ToolKind = kindFor(toolName.orEmpty())
 
     fun resolve(segment: MessageSegment): ToolPresentation {
-        val toolName = segment.toolName.orEmpty()
+        val displaySegment = ProcessCardOverlay.apply(segment)
+        val toolName = displaySegment.toolName.orEmpty()
         val kind = kindFor(toolName)
         val resultElement = parseElement(
-            segment.toolStructuredResult ?: segment.toolResult,
+            displaySegment.toolStructuredResult ?: displaySegment.toolResult,
         )
         val resultEnvelope = resultElement as? JsonObject
         val resultObject = effectiveResultObject(kind, resultEnvelope)
         val errorCode = resultObject.string("error") ?: resultEnvelope.string("error")
         val exitCode = resultObject.int("exit_code") ?: resultEnvelope.int("exit_code")
-        val explicitState = stateFromWire(segment.toolState)
+        val explicitState = stateFromWire(displaySegment.toolState)
         // Until a result arrives, arguments can still be a JSON prefix and can also contain a very
         // large file payload. Never strictly parse that growing buffer on the UI thread. The
         // bounded prefix resolver below extracts only live summary hints; final semantic parsing
         // remains available once the call has produced a result.
         val argumentsAwaitingResult =
-            segment.toolResult == null && segment.toolStructuredResult == null
-        val args = if (argumentsAwaitingResult) null else parseObject(segment.toolArgs)
-        val streamingHints = StreamingToolArgumentHintResolver.resolve(kind, segment.toolArgs)
+            displaySegment.toolResult == null && displaySegment.toolStructuredResult == null
+        // Tool panels show concrete parameters; expand any leaked path-reference tokens.
+        val rawArgs = displaySegment.toolArgs?.let(PathReferenceTokens::expandForSend)
+        val args = if (argumentsAwaitingResult) null else parseObject(rawArgs)
+        val streamingHints = StreamingToolArgumentHintResolver.resolve(kind, rawArgs)
+        val asyncId = resultEnvelope.string(ProcessTools.PROCESS_ID)
+            ?: resultObject.string(ProcessTools.PROCESS_ID)
+            ?: resultEnvelope.string("async_command_id")
+            ?: resultObject.string("async_command_id")
         val background = resultEnvelope.boolean("background") == true ||
+            resultEnvelope.boolean("running") == true ||
+            resultObject.boolean("running") == true ||
             resultObject.string("state").equals("running", ignoreCase = true) &&
-            (resultObject.string("job_id") ?: resultEnvelope.string("job_id")) != null
+            (resultObject.string("job_id") ?: resultEnvelope.string("job_id") ?: asyncId) != null
         val nonZeroShellExit = kind == ToolKind.SHELL_EXECUTE &&
             exitCode != null &&
             exitCode != 0
         val count = semanticCount(kind, resultObject)
-            ?: tolerantSemanticCount(kind, segment.toolStructuredResult ?: segment.toolResult)
+            ?: tolerantSemanticCount(kind, displaySegment.toolStructuredResult ?: displaySegment.toolResult)
         val semanticEmpty = isSemanticEmpty(
             kind = kind,
-            rawResult = segment.toolResult.orEmpty(),
+            rawResult = displaySegment.toolResult.orEmpty(),
             result = resultObject,
             count = count,
             errorCode = errorCode,
@@ -133,12 +146,12 @@ internal object ToolPresentationResolver {
                 ?.takeIf { it.isNotBlank() }
                 ?: errorCode.replace('_', ' ')
         } else {
-            segment.toolResult
+            displaySegment.toolResult
                 ?.takeIf { it.startsWith("Error", ignoreCase = true) }
         }
         val state = when {
-            segment.toolResult == null -> explicitState ?: run {
-                if (segment.toolProgress.isNullOrEmpty()) ToolPresentationState.CALLING
+            displaySegment.toolResult == null -> explicitState ?: run {
+                if (displaySegment.toolProgress.isNullOrEmpty()) ToolPresentationState.CALLING
                 else ToolPresentationState.RUNNING
             }
             semanticEmpty -> ToolPresentationState.EMPTY
@@ -154,11 +167,11 @@ internal object ToolPresentationResolver {
             state = state,
             arguments = args,
             result = resultObject ?: resultElement,
-            rawArguments = segment.toolArgs,
-            rawResult = segment.toolResult,
-            rawTextResult = segment.toolResultText,
-            rawStructuredResult = segment.toolStructuredResult,
-            liveOutput = segment.toolProgress,
+            rawArguments = rawArgs,
+            rawResult = displaySegment.toolResult,
+            rawTextResult = displaySegment.toolResultText,
+            rawStructuredResult = displaySegment.toolStructuredResult,
+            liveOutput = displaySegment.toolProgress,
             subject = normalizeToolSummarySubject(
                 subject(kind, args, resultObject)
                     ?: subject(kind, args, resultEnvelope)
@@ -166,13 +179,18 @@ internal object ToolPresentationResolver {
             ),
             device = resultEnvelope.string("server")
                 ?: resultObject.string("server")
-                ?: segment.toolTarget
+                ?: displaySegment.toolTarget
                 ?: args.string("server")
                 ?: streamingHints.server,
             count = count,
             errorMessage = error,
             exitCode = exitCode,
-            jobId = resultEnvelope.string("job_id") ?: resultObject.string("job_id"),
+            jobId = resultEnvelope.string(ProcessTools.PROCESS_ID)
+                ?: resultObject.string(ProcessTools.PROCESS_ID)
+                ?: resultEnvelope.string("async_command_id")
+                ?: resultObject.string("async_command_id")
+                ?: resultEnvelope.string("job_id")
+                ?: resultObject.string("job_id"),
             outputLength = resultObject.string("output")?.length,
         )
     }
@@ -201,21 +219,50 @@ internal object ToolPresentationResolver {
         "delete_skill_file" -> ToolKind.SKILL_DELETE
         "web_search", "openai_search", "google_search" -> ToolKind.WEB_SEARCH
         "web_fetch" -> ToolKind.WEB_FETCH
-        "search_conversations" -> ToolKind.CONVERSATION_SEARCH
+        "query_detail_store" -> ToolKind.UNKNOWN
+        "search_current_conversation", "search_conversations" -> ToolKind.CONVERSATION_SEARCH
         "list_conversations" -> ToolKind.CONVERSATION_LIST
         "read_conversation" -> ToolKind.CONVERSATION_READ
-        "list_shells" -> ToolKind.SHELL_LIST
-        "execute_shell_command" -> ToolKind.SHELL_EXECUTE
-        "list_shell_jobs" -> ToolKind.SHELL_JOB_LIST
-        "get_shell_job" -> ToolKind.SHELL_JOB_GET
-        "wait_for_job" -> ToolKind.SHELL_JOB_WAIT
-        "stop_shell_job" -> ToolKind.SHELL_JOB_STOP
-        "file_read" -> ToolKind.FILE_READ
-        "file_write" -> ToolKind.FILE_WRITE
-        "file_edit" -> ToolKind.FILE_EDIT
-        "file_glob" -> ToolKind.FILE_GLOB
-        "file_grep" -> ToolKind.FILE_GREP
-        "view_image" -> ToolKind.IMAGE_VIEW
+        "list_remote_shells" -> ToolKind.SHELL_LIST
+        "execute_remote_command",
+        "execute_local_command",
+        "execute_remote_async_command",
+        "execute_local_async_command",
+        "start_remote_process",
+        "start_local_process" -> ToolKind.SHELL_EXECUTE
+        "request_all_files_access" -> ToolKind.SHELL_EXECUTE
+        "list_remote_jobs" -> ToolKind.SHELL_JOB_LIST
+        "list_background_processes" -> ToolKind.SHELL_JOB_LIST
+        "get_remote_job",
+        "get_async_command",
+        "get_process" -> ToolKind.SHELL_JOB_GET
+        "wait_remote_job",
+        "wait_async_command",
+        "wait_process" -> ToolKind.SHELL_JOB_WAIT
+        "stop_remote_job",
+        "stop_async_command",
+        "stop_process" -> ToolKind.SHELL_JOB_STOP
+        "file_read",
+        "read_local_file",
+        "read_remote_file" -> ToolKind.FILE_READ
+        "file_write",
+        "write_local_file",
+        "write_remote_file" -> ToolKind.FILE_WRITE
+        "file_edit",
+        "str_replace_local",
+        "str_replace_remote" -> ToolKind.FILE_EDIT
+        "file_glob",
+        "list_local_files",
+        "list_remote_files",
+        "glob_local_files",
+        "glob_remote_files" -> ToolKind.FILE_GLOB
+        "file_grep",
+        "grep_local",
+        "grep_remote" -> ToolKind.FILE_GREP
+        "view_image", "read_image" -> ToolKind.IMAGE_VIEW
+        "open_file" -> ToolKind.FILE_OPEN
+        "upload_file_to_server" -> ToolKind.FILE_WRITE
+        "download_file" -> ToolKind.FILE_READ
         "generate_image" -> ToolKind.IMAGE_GENERATE
         "create_task" -> ToolKind.TASK_CREATE
         "list_tasks" -> ToolKind.TASK_LIST
@@ -254,7 +301,9 @@ internal object ToolPresentationResolver {
             ?: result.arraySize("conversations")
         ToolKind.SHELL_LIST -> result.arraySize("devices")
         ToolKind.SHELL_JOB_LIST -> result.arraySize("jobs")
-        ToolKind.FILE_GLOB -> result.arraySize("files")
+        ToolKind.FILE_GLOB -> result.arraySize("entries")
+            ?: result.arraySize("paths")
+            ?: result.arraySize("files")
         ToolKind.FILE_GREP -> result.arraySize("matches")
         ToolKind.TASK_LIST -> result.arraySize("tasks")
         else -> null
@@ -313,16 +362,27 @@ internal object ToolPresentationResolver {
         ToolKind.CONVERSATION_READ -> result.string("title")
             ?: arguments.string("conversation_id")
         ToolKind.SHELL_EXECUTE -> arguments.string("command")
+            ?: arguments.string("script")
             ?: result.string("command")
+            ?: result.string("script")
         ToolKind.SHELL_JOB_GET,
         ToolKind.SHELL_JOB_WAIT,
-        ToolKind.SHELL_JOB_STOP -> arguments.string("job_id")
+        ToolKind.SHELL_JOB_STOP -> arguments.string(ProcessTools.PROCESS_ID)
+            ?: result.string(ProcessTools.PROCESS_ID)
+            ?: arguments.string("async_command_id")
+            ?: result.string("async_command_id")
+            ?: arguments.string("job_id")
             ?: result.string("job_id")
         ToolKind.FILE_READ,
         ToolKind.FILE_WRITE,
         ToolKind.FILE_EDIT,
+        ToolKind.FILE_OPEN,
         ToolKind.IMAGE_VIEW -> arguments.string("path")
+            ?: arguments.string("local_path")
+            ?: arguments.string("remote_path")
             ?: result.string("path")
+            ?: result.string("local_path")
+            ?: result.string("remote_path")
         ToolKind.FILE_GLOB,
         ToolKind.FILE_GREP -> arguments.string("pattern")
             ?: result.string("pattern")
